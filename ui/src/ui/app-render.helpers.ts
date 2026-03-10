@@ -6,6 +6,7 @@ import { syncUrlWithSessionKey } from "./app-settings.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import { OpenClawApp } from "./app.ts";
 import { ChatState, loadChatHistory } from "./controllers/chat.ts";
+import { patchSession } from "./controllers/sessions.ts";
 import { icons } from "./icons.ts";
 import { iconForTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
 import type { ThemeTransitionContext } from "./theme-transition.ts";
@@ -138,6 +139,10 @@ export function renderChatControls(state: AppViewState) {
   const disableFocusToggle = state.onboarding;
   const showThinking = state.onboarding ? false : state.settings.chatShowThinking;
   const focusActive = state.onboarding ? true : state.settings.chatFocusMode;
+  const activeSession = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
+  const activeSessionName = resolveSessionDisplayName(state.sessionKey, activeSession);
+  const renameTitle =
+    activeSession?.label?.trim() || activeSession?.displayName?.trim() || activeSessionName;
   // Refresh icon
   const refreshIcon = html`
     <svg
@@ -175,6 +180,7 @@ export function renderChatControls(state: AppViewState) {
   return html`
     <div class="chat-controls">
       <label class="field chat-controls__session">
+        <span class="chat-controls__label">Nest session</span>
         <select
           .value=${state.sessionKey}
           ?disabled=${!state.connected}
@@ -211,6 +217,32 @@ export function renderChatControls(state: AppViewState) {
           )}
         </select>
       </label>
+      <button
+        class="btn btn--sm chat-controls__rename"
+        ?disabled=${!state.connected}
+        @click=${async () => {
+          const value = window.prompt("Rename this session", renameTitle);
+          if (value == null) {
+            return;
+          }
+          const nextLabel = value.trim();
+          const currentLabel = activeSession?.label?.trim() || "";
+          if (nextLabel === currentLabel) {
+            return;
+          }
+          await patchSession(
+            state as unknown as Parameters<typeof patchSession>[0],
+            state.sessionKey,
+            {
+              label: nextLabel || null,
+            },
+          );
+        }}
+        title="Rename session"
+      >
+        ${icons.edit}
+        <span>Rename</span>
+      </button>
       <button
         class="btn btn--sm btn--icon"
         ?disabled=${state.chatLoading || !state.connected}
