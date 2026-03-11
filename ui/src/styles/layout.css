@@ -578,6 +578,100 @@
   flex-shrink: 0;
 }
 
+@media (min-width: 1101px) {
+  .shell--chat {
+    --shell-topbar-height: 50px;
+  }
+
+  .topbar--chat {
+    padding: 0 18px;
+    border-bottom-color: rgba(124, 242, 214, 0.08);
+    background: color-mix(in srgb, var(--chrome) 86%, transparent);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
+    backdrop-filter: blur(14px) saturate(112%);
+  }
+
+  .topbar--chat .topbar-left {
+    gap: 10px;
+  }
+
+  .topbar--chat .brand {
+    gap: 8px;
+    padding: 3px 6px 3px 3px;
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .topbar--chat .brand-logo {
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    padding: 4px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .topbar--chat .brand-title {
+    font-size: 14px;
+    letter-spacing: -0.03em;
+  }
+
+  .topbar--chat .brand-sub {
+    color: var(--muted);
+  }
+
+  .topbar--chat .topbar-status {
+    gap: 6px;
+  }
+
+  .topbar--chat .topbar-status .pill {
+    height: 30px;
+    padding: 5px 9px;
+    font-size: 11px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.025);
+    border-color: rgba(124, 242, 214, 0.08);
+  }
+
+  .content--chat {
+    gap: 14px;
+    padding: 12px clamp(16px, 2.5vw, 32px) 0;
+  }
+
+  .content--chat .content-header {
+    width: min(1180px, 100%);
+    margin: 0 auto;
+    align-items: center;
+    gap: 12px 18px;
+    padding: 4px 2px 8px;
+    border: none;
+    border-bottom: 1px solid rgba(124, 242, 214, 0.08);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .content--chat .content-header > div:first-child {
+    flex: 0 1 240px;
+  }
+
+  .content--chat .page-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .content--chat .page-sub {
+    margin-top: 3px;
+    font-size: 12px;
+    color: color-mix(in srgb, var(--muted) 88%, transparent);
+  }
+
+  .content--chat .page-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
 /* ===========================================
    Grid Utilities
    =========================================== */

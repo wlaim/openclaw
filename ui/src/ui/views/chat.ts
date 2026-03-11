@@ -2,6 +2,11 @@ import { html, nothing } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { repeat } from "lit/directives/repeat.js";
 import {
+  resolveSessionDisplayName,
+  resolveSessionOptionLabel,
+  type ChatSessionOption,
+} from "../app-render.helpers.ts";
+import {
   renderMessageGroup,
   renderReadingIndicatorGroup,
   renderStreamingGroup,
@@ -56,6 +61,7 @@ export type ChatProps = {
   disabledReason: string | null;
   error: string | null;
   sessions: SessionsListResult | null;
+  sessionOptions?: ChatSessionOption[];
   // Focus mode
   focusMode: boolean;
   // Sidebar state
@@ -90,12 +96,7 @@ const COMPACTION_TOAST_DURATION_MS = 5000;
 const FALLBACK_TOAST_DURATION_MS = 8000;
 
 function adjustTextareaHeight(el: HTMLTextAreaElement) {
-  if (globalThis.matchMedia?.("(max-width: 640px)").matches) {
-    el.style.height = "";
-    return;
-  }
-  el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
+  el.style.height = "";
 }
 
 function renderCompactionIndicator(status: CompactionIndicatorStatus | null | undefined) {
@@ -255,13 +256,28 @@ function formatModelButtonLabel(model: string) {
 }
 
 function resolveSessionButtonLabel(props: ChatProps): string {
+  const activeSessionOption = props.sessionOptions?.find((entry) => entry.key === props.sessionKey);
   const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);
-  const label =
+  return (
+    resolveSessionDisplayName(
+      props.sessionKey,
+      activeSessionOption?.row || activeSession || undefined,
+    ) ||
+    activeSessionOption?.displayName?.trim() ||
     activeSession?.label?.trim() ||
     activeSession?.displayName?.trim() ||
     props.sessionKey.trim() ||
-    "Session";
-  return label;
+    "Session"
+  );
+}
+
+function resolveSessionOptionText(
+  session: ChatSessionOption | SessionsListResult["sessions"][number],
+): string {
+  if ("row" in session) {
+    return resolveSessionOptionLabel(session.key, session.row, { isMain: session.isMain });
+  }
+  return resolveSessionOptionLabel(session.key, session);
 }
 
 function closeParentDetails(target: EventTarget | null) {
@@ -325,6 +341,12 @@ function renderMobileCompactControls(props: ChatProps) {
 
 function renderComposerCompactControls(props: ChatProps) {
   const currentSessionLabel = resolveSessionButtonLabel(props);
+  const activeSessionOption = props.sessionOptions?.find((entry) => entry.key === props.sessionKey);
+  const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);
+  const currentSessionFullLabel = resolveSessionOptionText(
+    activeSessionOption ||
+      activeSession || { key: props.sessionKey, displayName: currentSessionLabel },
+  );
   const activeModel = props.activeModel?.trim() || "";
   const mergedModels = [
     activeModel,
@@ -332,15 +354,19 @@ function renderComposerCompactControls(props: ChatProps) {
   ].filter(Boolean);
   const modelOptions = Array.from(new Set(mergedModels)).slice(0, 8);
   const sessionOptions =
-    props.sessions?.sessions?.length && props.sessions.sessions.length > 0
-      ? props.sessions.sessions
-      : [{ key: props.sessionKey, displayName: currentSessionLabel }];
+    props.sessionOptions && props.sessionOptions.length > 0
+      ? props.sessionOptions
+      : props.sessions?.sessions?.length && props.sessions.sessions.length > 0
+        ? props.sessions.sessions
+        : [{ key: props.sessionKey, displayName: currentSessionLabel }];
 
   return html`
     <div class="chat-compose__controls" aria-label="Composer controls">
       <details class="chat-compose__menu">
         <summary class="chat-compose__control" aria-label="Choose session">
-          <span class="chat-compose__control-value" title=${props.sessionKey}>${currentSessionLabel}</span>
+          <span class="chat-compose__control-value" title=${currentSessionFullLabel}
+            >${currentSessionLabel}</span
+          >
         </summary>
         <div class="chat-compose__menu-panel">
           <label class="field chat-compose__menu-field">
@@ -357,7 +383,7 @@ function renderComposerCompactControls(props: ChatProps) {
               ${sessionOptions.map(
                 (session) => html`
                   <option value=${session.key} title=${session.key}>
-                    ${session.displayName ?? session.label ?? session.key}
+                    ${resolveSessionOptionText(session)}
                   </option>
                 `,
               )}
@@ -406,6 +432,38 @@ function renderComposerCompactControls(props: ChatProps) {
   `;
 }
 
+function isMobileViewport(): boolean {
+  return globalThis.matchMedia?.("(max-width: 600px)").matches ?? false;
+}
+
+function getEmptyStateCopy(props: ChatProps): {
+  title: string;
+  detail: string;
+  status: string;
+} {
+  if (!props.connected || props.disabledReason) {
+    return {
+      title: "Chat disconnected",
+      detail: "Reconnect the gateway to resume this session and continue the conversation.",
+      status: "Offline",
+    };
+  }
+
+  if (props.error) {
+    return {
+      title: "Transcript unavailable",
+      detail: "The session is open, but the transcript could not be loaded cleanly yet.",
+      status: "Needs attention",
+    };
+  }
+
+  return {
+    title: "No messages yet",
+    detail: "This session is ready. Send a message below to start the conversation.",
+    status: "Ready",
+  };
+}
+
 export function renderChat(props: ChatProps) {
   const canCompose = props.connected;
   const isBusy = props.sending || props.stream !== null;
@@ -418,127 +476,27 @@ export function renderChat(props: ChatProps) {
     avatar: props.assistantAvatar ?? props.assistantAvatarUrl ?? null,
   };
   const composePlaceholder = "Input here";
+  const mobileViewport = isMobileViewport();
 
   const splitRatio = props.splitRatio ?? 0.6;
   const sidebarOpen = Boolean(props.sidebarOpen && props.onCloseSidebar);
-  const thread = html`
-    <div
-      class="chat-thread"
-      role="log"
-      aria-live="polite"
-      @scroll=${props.onChatScroll}
-    >
-      ${
-        props.loading
-          ? html`
-              <div class="muted">Loading chat…</div>
-            `
-          : nothing
-      }
-      ${repeat(
-        buildChatItems(props),
-        (item) => item.key,
-        (item) => {
-          if (item.kind === "divider") {
-            return html`
-              <div class="chat-divider" role="separator" data-ts=${String(item.timestamp)}>
-                <span class="chat-divider__line"></span>
-                <span class="chat-divider__label">${item.label}</span>
-                <span class="chat-divider__line"></span>
-              </div>
-            `;
-          }
-
-          if (item.kind === "reading-indicator") {
-            return renderReadingIndicatorGroup(assistantIdentity);
-          }
-
-          if (item.kind === "stream") {
-            return renderStreamingGroup(
-              item.text,
-              item.startedAt,
-              props.onOpenSidebar,
-              assistantIdentity,
-            );
-          }
-
-          if (item.kind === "group") {
-            return renderMessageGroup(item, {
-              onOpenSidebar: props.onOpenSidebar,
-              showReasoning,
-              assistantName: props.assistantName,
-              assistantAvatar: assistantIdentity.avatar,
-            });
-          }
-
-          return nothing;
-        },
-      )}
-    </div>
-  `;
-
-  return html`
-    <section class="card chat">
-      ${props.disabledReason ? html`<div class="callout">${props.disabledReason}</div>` : nothing}
-
-      ${props.error ? html`<div class="callout danger">${props.error}</div>` : nothing}
-
-      ${
-        props.focusMode
-          ? html`
-            <button
-              class="chat-focus-exit"
-              type="button"
-              @click=${props.onToggleFocusMode}
-              aria-label="Exit focus mode"
-              title="Exit focus mode"
-            >
-              ${icons.x}
-            </button>
+  const chatItems = buildChatItems(props);
+  const emptyDesktopState = !props.loading && chatItems.length === 0 && !mobileViewport;
+  const threadLead = html`
+    ${
+      props.disabledReason
+        ? html`
+            <div class="chat-thread__notice chat-thread__notice--status callout">
+              ${props.disabledReason}
+            </div>
           `
-          : nothing
-      }
-
-      <div
-        class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}"
-      >
-        <div
-          class="chat-main"
-          style="flex: ${sidebarOpen ? `0 0 ${splitRatio * 100}%` : "1 1 100%"}"
-        >
-          ${renderMobileCompactControls(props)}
-          ${thread}
-        </div>
-
-        ${
-          sidebarOpen
-            ? html`
-              <resizable-divider
-                .splitRatio=${splitRatio}
-                @resize=${(e: CustomEvent) => props.onSplitRatioChange?.(e.detail.splitRatio)}
-              ></resizable-divider>
-              <div class="chat-sidebar">
-                ${renderMarkdownSidebar({
-                  content: props.sidebarContent ?? null,
-                  error: props.sidebarError ?? null,
-                  onClose: props.onCloseSidebar!,
-                  onViewRawText: () => {
-                    if (!props.sidebarContent || !props.onOpenSidebar) {
-                      return;
-                    }
-                    props.onOpenSidebar(`\`\`\`\n${props.sidebarContent}\n\`\`\``);
-                  },
-                })}
-              </div>
-            `
-            : nothing
-        }
-      </div>
-
-      ${
-        props.queue.length
-          ? html`
-            <div class="chat-queue" role="status" aria-live="polite">
+        : nothing
+    }
+    ${props.error ? html`<div class="chat-thread__notice callout danger">${props.error}</div>` : nothing}
+    ${
+      props.queue.length
+        ? html`
+            <div class="chat-queue chat-thread__queue" role="status" aria-live="polite">
               <div class="chat-queue__title">Queued (${props.queue.length})</div>
               <div class="chat-queue__list">
                 ${props.queue.map(
@@ -564,92 +522,225 @@ export function renderChat(props: ChatProps) {
               </div>
             </div>
           `
-          : nothing
-      }
+        : nothing
+    }
+    ${renderFallbackIndicator(props.fallbackStatus)}
+    ${renderCompactionIndicator(props.compactionStatus)}
+  `;
+  const emptyState = emptyDesktopState
+    ? (() => {
+        const copy = getEmptyStateCopy(props);
+        return html`
+          <div class="chat-empty-state" role="status" aria-live="polite">
+            <div class="chat-empty-state__meta">
+              <span class="chat-empty-state__eyebrow">${copy.status}</span>
+              <span class="chat-empty-state__title">${copy.title}</span>
+            </div>
+            <p class="chat-empty-state__detail">${copy.detail}</p>
+          </div>
+        `;
+      })()
+    : nothing;
 
-      ${renderFallbackIndicator(props.fallbackStatus)}
-      ${renderCompactionIndicator(props.compactionStatus)}
+  const thread = html`
+    <div
+      class="chat-thread ${emptyDesktopState ? "chat-thread--empty" : ""}"
+      role="log"
+      aria-live="polite"
+      @scroll=${props.onChatScroll}
+    >
+      <div class="chat-thread__inner">
+        ${emptyDesktopState ? emptyState : threadLead}
+        ${
+          props.loading
+            ? html`
+                <div class="muted">Loading chat…</div>
+              `
+            : nothing
+        }
+        ${repeat(
+          chatItems,
+          (item) => item.key,
+          (item) => {
+            if (item.kind === "divider") {
+              return html`
+                <div class="chat-divider" role="separator" data-ts=${String(item.timestamp)}>
+                  <span class="chat-divider__line"></span>
+                  <span class="chat-divider__label">${item.label}</span>
+                  <span class="chat-divider__line"></span>
+                </div>
+              `;
+            }
 
+            if (item.kind === "reading-indicator") {
+              return renderReadingIndicatorGroup(assistantIdentity);
+            }
+
+            if (item.kind === "stream") {
+              return renderStreamingGroup(
+                item.text,
+                item.startedAt,
+                props.onOpenSidebar,
+                assistantIdentity,
+              );
+            }
+
+            if (item.kind === "group") {
+              return renderMessageGroup(item, {
+                onOpenSidebar: props.onOpenSidebar,
+                showReasoning,
+                assistantName: props.assistantName,
+                assistantAvatar: assistantIdentity.avatar,
+              });
+            }
+
+            return nothing;
+          },
+        )}
+      </div>
+    </div>
+  `;
+
+  return html`
+    <section class="card chat">
       ${
-        props.showNewMessages
+        props.focusMode
           ? html`
             <button
-              class="btn chat-new-messages"
+              class="chat-focus-exit"
               type="button"
-              @click=${props.onScrollToBottom}
+              @click=${props.onToggleFocusMode}
+              aria-label="Exit focus mode"
+              title="Exit focus mode"
             >
-              New messages ${icons.arrowDown}
+              ${icons.x}
             </button>
           `
           : nothing
       }
 
-      <div class="chat-compose">
-        ${renderAttachmentPreview(props)}
+      <div class="chat-shell">
+        <div class="chat-stage">
+          <div
+            class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}"
+          >
+            <div
+              class="chat-main"
+              style="flex: ${sidebarOpen ? `0 0 ${splitRatio * 100}%` : "1 1 100%"}"
+            >
+              ${renderMobileCompactControls(props)}
+              ${thread}
+            </div>
+
+            ${
+              sidebarOpen
+                ? html`
+                  <resizable-divider
+                    .splitRatio=${splitRatio}
+                    @resize=${(e: CustomEvent) => props.onSplitRatioChange?.(e.detail.splitRatio)}
+                  ></resizable-divider>
+                  <div class="chat-sidebar">
+                    ${renderMarkdownSidebar({
+                      content: props.sidebarContent ?? null,
+                      error: props.sidebarError ?? null,
+                      onClose: props.onCloseSidebar!,
+                      onViewRawText: () => {
+                        if (!props.sidebarContent || !props.onOpenSidebar) {
+                          return;
+                        }
+                        props.onOpenSidebar(`\`\`\`\n${props.sidebarContent}\n\`\`\``);
+                      },
+                    })}
+                  </div>
+                `
+                : nothing
+            }
+          </div>
+        </div>
+
         ${
-          canAbort
+          props.showNewMessages
             ? html`
-              <div class="chat-compose__secondary-actions">
-                <button
-                  class="btn chat-compose__secondary chat-compose__secondary--stop"
-                  ?disabled=${!props.connected}
-                  @click=${props.onAbort}
-                >
-                  Stop
-                </button>
-              </div>
+              <button
+                class="btn chat-new-messages"
+                type="button"
+                @click=${props.onScrollToBottom}
+              >
+                New messages ${icons.arrowDown}
+              </button>
             `
             : nothing
         }
-        <div class="chat-compose__row">
-          <div class="chat-compose__zone chat-compose__zone--controls">
-            ${renderComposerCompactControls(props)}
-          </div>
-          <div class="field chat-compose__field">
-            <div class="chat-compose__input-shell">
-              <textarea
-                ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
-                .value=${props.draft}
-                dir=${detectTextDirection(props.draft)}
-                aria-label="Input here"
-                ?disabled=${!props.connected}
-                @keydown=${(e: KeyboardEvent) => {
-                  if (e.key !== "Enter") {
-                    return;
-                  }
-                  if (e.isComposing || e.keyCode === 229) {
-                    return;
-                  }
-                  if (e.shiftKey) {
-                    return;
-                  } // Allow Shift+Enter for line breaks
-                  if (!props.connected) {
-                    return;
-                  }
-                  e.preventDefault();
-                  if (canCompose) {
-                    props.onSend();
-                  }
-                }}
-                @input=${(e: Event) => {
-                  const target = e.target as HTMLTextAreaElement;
-                  adjustTextareaHeight(target);
-                  props.onDraftChange(target.value);
-                }}
-                @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
-                placeholder=${composePlaceholder}
-              ></textarea>
+
+        <div class="chat-compose">
+          ${renderAttachmentPreview(props)}
+          <div class="chat-compose__row">
+            <div class="chat-compose__zone chat-compose__zone--controls">
+              ${renderComposerCompactControls(props)}
             </div>
-          </div>
-          <div class="chat-compose__zone chat-compose__zone--send">
-            <div class="chat-compose__actions">
-              <button
-                class="btn primary chat-compose__send"
-                ?disabled=${!props.connected}
-                @click=${props.onSend}
-              >
-                ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
-              </button>
+            <div class="field chat-compose__field">
+              <div class="chat-compose__input-shell">
+                <textarea
+                  ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
+                  .value=${props.draft}
+                  dir=${detectTextDirection(props.draft)}
+                  aria-label="Input here"
+                  ?disabled=${!props.connected}
+                  @keydown=${(e: KeyboardEvent) => {
+                    if (e.key !== "Enter") {
+                      return;
+                    }
+                    if (e.isComposing || e.keyCode === 229) {
+                      return;
+                    }
+                    if (e.shiftKey) {
+                      return;
+                    } // Allow Shift+Enter for line breaks
+                    if (!props.connected) {
+                      return;
+                    }
+                    e.preventDefault();
+                    if (canCompose) {
+                      props.onSend();
+                    }
+                  }}
+                  @input=${(e: Event) => {
+                    const target = e.target as HTMLTextAreaElement;
+                    adjustTextareaHeight(target);
+                    props.onDraftChange(target.value);
+                  }}
+                  @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
+                  placeholder=${composePlaceholder}
+                ></textarea>
+                ${
+                  canAbort
+                    ? html`
+                      <button
+                        class="chat-compose__stop"
+                        type="button"
+                        ?disabled=${!props.connected}
+                        @click=${props.onAbort}
+                        aria-label="Stop generating"
+                        title="Stop generating"
+                      >
+                        <span class="chat-compose__stop-icon" aria-hidden="true"></span>
+                        <span class="chat-compose__stop-label">Stop</span>
+                      </button>
+                    `
+                    : nothing
+                }
+              </div>
+            </div>
+            <div class="chat-compose__zone chat-compose__zone--send">
+              <div class="chat-compose__actions">
+                <button
+                  class="btn primary chat-compose__send"
+                  ?disabled=${!props.connected}
+                  @click=${props.onSend}
+                >
+                  ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
+                </button>
+              </div>
             </div>
           </div>
         </div>

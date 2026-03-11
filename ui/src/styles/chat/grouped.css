@@ -22,7 +22,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-width: min(900px, calc(100% - 60px));
+  max-width: min(980px, calc(100% - 60px));
 }
 
 /* User messages align content right */
@@ -257,6 +257,24 @@ img.chat-avatar {
 .chat-group.user .chat-bubble {
   background: var(--accent-subtle);
   border-color: transparent;
+}
+
+@media (min-width: 1101px) {
+  .chat-group {
+    margin-left: 0;
+    margin-right: 0;
+    margin-bottom: 18px;
+    gap: 14px;
+  }
+
+  .chat-group-messages {
+    max-width: min(940px, calc(100% - 68px));
+  }
+
+  .chat-bubble {
+    border-radius: 18px;
+    padding: 11px 15px;
+  }
 }
 
 :root[data-theme="light"] .chat-group.user .chat-bubble {

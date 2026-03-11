@@ -3,6 +3,8 @@ import {
   isCronSessionKey,
   parseSessionKey,
   resolveSessionDisplayName,
+  resolveSessionIdentityInfo,
+  resolveSessionOptionLabel,
 } from "./app-render.helpers.ts";
 import type { SessionsListResult } from "./types.ts";
 
@@ -282,5 +284,49 @@ describe("isCronSessionKey", () => {
     expect(isCronSessionKey("main")).toBe(false);
     expect(isCronSessionKey("discord:group:eng")).toBe(false);
     expect(isCronSessionKey("agent:main:slack:cron:job:run:uuid")).toBe(false);
+  });
+});
+
+describe("resolveSessionIdentityInfo", () => {
+  it("prefers the stable sessionId when present", () => {
+    expect(
+      resolveSessionIdentityInfo(
+        "clawclaw",
+        row({ key: "clawclaw", sessionId: "sess_9f72-1c55-aa44d2" }),
+      ),
+    ).toEqual({
+      shortId: "AA44D2",
+      source: "sessionId",
+      fullValue: "sess_9f72-1c55-aa44d2",
+    });
+  });
+
+  it("falls back to the session key when sessionId is absent", () => {
+    expect(resolveSessionIdentityInfo("agent:main:telegram:direct:clawclaw")).toEqual({
+      shortId: "AWCLAW",
+      source: "sessionKey",
+      fullValue: "agent:main:telegram:direct:clawclaw",
+    });
+  });
+});
+
+describe("resolveSessionOptionLabel", () => {
+  it("adds a compact identity hint for same-named sessions", () => {
+    expect(
+      resolveSessionOptionLabel(
+        "clawclaw",
+        row({ key: "clawclaw", displayName: "clawclaw", sessionId: "sess_9f72-1c55-aa44d2" }),
+      ),
+    ).toBe("clawclaw · #AA44D2");
+  });
+
+  it("marks the main session in the picker label", () => {
+    expect(
+      resolveSessionOptionLabel(
+        "main",
+        row({ key: "main", label: "clawclaw", sessionId: "sess_f4ec01" }),
+        { isMain: true },
+      ),
+    ).toBe("clawclaw · Main · #F4EC01");
   });
 });

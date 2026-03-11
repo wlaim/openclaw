@@ -204,7 +204,7 @@ describe("chat view", () => {
     expect(container.textContent).not.toContain("New session");
   });
 
-  it("renders the composer as control, input, and send zones with a textarea shell", () => {
+  it("renders desktop composer session and model controls to the left of the input", () => {
     const container = document.createElement("div");
     render(
       renderChat(
@@ -214,7 +214,7 @@ describe("chat view", () => {
           modelSuggestions: ["openai/gpt-5.4"],
           sessions: {
             ...createSessions(),
-            sessions: [{ key: "clawclaw", displayName: "clawclaw" }],
+            sessions: [{ key: "clawclaw", displayName: "clawclaw", kind: "direct", updatedAt: 0 }],
           },
         }),
       ),
@@ -223,19 +223,76 @@ describe("chat view", () => {
 
     const row = container.querySelector(".chat-compose__row");
     expect(row).not.toBeNull();
-    expect(
-      row?.querySelector(".chat-compose__zone--controls .chat-compose__controls"),
-    ).not.toBeNull();
+    const controls = row?.querySelector(".chat-compose__zone--controls .chat-compose__controls");
+    expect(controls).not.toBeNull();
+    expect(controls?.querySelectorAll(".chat-compose__menu")).toHaveLength(2);
     const textarea = row?.querySelector(".chat-compose__field .chat-compose__input-shell textarea");
     expect(textarea).not.toBeNull();
     expect(row?.querySelector(".chat-compose__zone--send .chat-compose__send")).not.toBeNull();
-    expect(row?.textContent).toContain("clawclaw");
-    expect(row?.textContent).toContain("gpt-5.4");
-    expect(row?.textContent).not.toContain("Session");
-    expect(row?.textContent).not.toContain("Model");
+    expect(controls?.textContent).toContain("clawclaw");
+    expect(controls?.textContent).toContain("gpt-5.4");
     expect(row?.textContent).not.toContain("Message");
     expect(row?.textContent).not.toContain("Connect to the gateway");
     expect(textarea?.getAttribute("placeholder")).toBe("Input here");
+  });
+
+  it("shows a short session name in the trigger and the full label in the dropdown", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          sessionKey: "main",
+          sessions: {
+            ...createSessions(),
+            sessions: [
+              {
+                key: "main",
+                label: "Primary Control Room",
+                displayName: "Primary Control Room",
+                sessionId: "sess_f4ec01",
+                kind: "direct",
+                updatedAt: 0,
+              },
+            ],
+          },
+        }),
+      ),
+      container,
+    );
+
+    const sessionTrigger = container.querySelector(
+      ".chat-compose__menu .chat-compose__control-value",
+    );
+    const sessionOption = container.querySelector(
+      'select[aria-label="Session"] option[value="main"]',
+    );
+
+    expect(sessionTrigger?.textContent?.trim()).toBe("Primary Control Room");
+    expect(sessionTrigger?.textContent).not.toContain("#F4EC01");
+    expect(sessionOption?.textContent?.trim()).toBe("Primary Control Room · #F4EC01");
+  });
+
+  it("renders a simplified desktop empty-state panel inside the transcript when chat is disconnected", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          connected: false,
+          disabledReason: "Disconnected from gateway.",
+        }),
+      ),
+      container,
+    );
+
+    const thread = container.querySelector(".chat-thread--empty");
+    const panel = container.querySelector(".chat-empty-state");
+    expect(thread).not.toBeNull();
+    expect(panel).not.toBeNull();
+    expect(panel?.textContent).toContain("Chat disconnected");
+    expect(container.querySelector(".chat-thread__notice")?.textContent).toContain(
+      "Disconnected from gateway.",
+    );
+    expect(panel?.querySelector(".chat-empty-state__status")).toBeNull();
   });
 
   it("shows a new session button when aborting is unavailable", () => {
@@ -327,7 +384,7 @@ describe("chat view", () => {
           modelSuggestions: ["openai/gpt-5.2", "anthropic/claude-sonnet-4"],
           sessions: {
             ...createSessions(),
-            sessions: [{ key: "main", displayName: "Main Session" }],
+            sessions: [{ key: "main", displayName: "Main Session", kind: "direct", updatedAt: 0 }],
           },
         }),
       ),

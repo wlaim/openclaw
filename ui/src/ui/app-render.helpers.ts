@@ -1,11 +1,8 @@
 import { html } from "lit";
-import { repeat } from "lit/directives/repeat.js";
 import { t } from "../i18n/index.ts";
 import { refreshChat } from "./app-chat.ts";
-import { syncUrlWithSessionKey } from "./app-settings.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import { OpenClawApp } from "./app.ts";
-import { ChatState, loadChatHistory } from "./controllers/chat.ts";
 import { patchSession } from "./controllers/sessions.ts";
 import { icons } from "./icons.ts";
 import { iconForTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
@@ -124,25 +121,16 @@ function renderCronFilterIcon(hiddenCount: number) {
 }
 
 export function renderChatControls(state: AppViewState) {
-  const mainSessionKey = resolveMainSessionKey(state.hello, state.sessionsResult);
   const hideCron = state.sessionsHideCron ?? true;
   const hiddenCronCount = hideCron
     ? countHiddenCronSessions(state.sessionKey, state.sessionsResult)
     : 0;
-  const sessionOptions = resolveSessionOptions(
-    state.sessionKey,
-    state.sessionsResult,
-    mainSessionKey,
-    hideCron,
-  );
   const disableThinkingToggle = state.onboarding;
   const disableFocusToggle = state.onboarding;
   const showThinking = state.onboarding ? false : state.settings.chatShowThinking;
   const focusActive = state.onboarding ? true : state.settings.chatFocusMode;
   const activeSession = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
-  const activeSessionName = resolveSessionDisplayName(state.sessionKey, activeSession);
-  const renameTitle =
-    activeSession?.label?.trim() || activeSession?.displayName?.trim() || activeSessionName;
+  const renameTitle = resolveSessionDisplayName(state.sessionKey, activeSession);
   // Refresh icon
   const refreshIcon = html`
     <svg
@@ -179,44 +167,6 @@ export function renderChatControls(state: AppViewState) {
   `;
   return html`
     <div class="chat-controls">
-      <label class="field chat-controls__session">
-        <span class="chat-controls__label">Nest session</span>
-        <select
-          .value=${state.sessionKey}
-          ?disabled=${!state.connected}
-          @change=${(e: Event) => {
-            const next = (e.target as HTMLSelectElement).value;
-            state.sessionKey = next;
-            state.chatMessage = "";
-            state.chatStream = null;
-            (state as unknown as OpenClawApp).chatStreamStartedAt = null;
-            state.chatRunId = null;
-            (state as unknown as OpenClawApp).resetToolStream();
-            (state as unknown as OpenClawApp).resetChatScroll();
-            state.applySettings({
-              ...state.settings,
-              sessionKey: next,
-              lastActiveSessionKey: next,
-            });
-            void state.loadAssistantIdentity();
-            syncUrlWithSessionKey(
-              state as unknown as Parameters<typeof syncUrlWithSessionKey>[0],
-              next,
-              true,
-            );
-            void loadChatHistory(state as unknown as ChatState);
-          }}
-        >
-          ${repeat(
-            sessionOptions,
-            (entry) => entry.key,
-            (entry) =>
-              html`<option value=${entry.key} title=${entry.key}>
-                ${entry.displayName ?? entry.key}
-              </option>`,
-          )}
-        </select>
-      </label>
       <button
         class="btn btn--sm chat-controls__rename"
         ?disabled=${!state.connected}
@@ -323,7 +273,7 @@ export function renderChatControls(state: AppViewState) {
   `;
 }
 
-function resolveMainSessionKey(
+export function resolveMainSessionKey(
   hello: AppViewState["hello"],
   sessions: SessionsListResult | null,
 ): string | null {
@@ -363,6 +313,12 @@ export type SessionKeyInfo = {
   prefix: string;
   /** Human-readable fallback when no label / displayName is available. */
   fallbackName: string;
+};
+
+export type SessionIdentityInfo = {
+  shortId: string;
+  source: "sessionId" | "sessionKey";
+  fullValue: string;
 };
 
 function capitalize(s: string): string {
@@ -444,6 +400,45 @@ export function resolveSessionDisplayName(
   return fallbackName;
 }
 
+function compactIdentityValue(value: string): string {
+  const cleaned = value.replace(/[^a-zA-Z0-9]/g, "");
+  const source = cleaned || value.replace(/\s+/g, "");
+  if (!source) {
+    return "UNKNOWN";
+  }
+  return source.slice(-6).toUpperCase();
+}
+
+export function resolveSessionIdentityInfo(
+  key: string,
+  row?: SessionsListResult["sessions"][number],
+): SessionIdentityInfo {
+  const sessionId = row?.sessionId?.trim();
+  if (sessionId) {
+    return {
+      shortId: compactIdentityValue(sessionId),
+      source: "sessionId",
+      fullValue: sessionId,
+    };
+  }
+  return {
+    shortId: compactIdentityValue(key),
+    source: "sessionKey",
+    fullValue: key,
+  };
+}
+
+export function resolveSessionOptionLabel(
+  key: string,
+  row?: SessionsListResult["sessions"][number],
+  opts?: { isMain?: boolean },
+): string {
+  const name = resolveSessionDisplayName(key, row);
+  const identity = resolveSessionIdentityInfo(key, row);
+  const mainLabel = opts?.isMain ? "Main" : "";
+  return [name, mainLabel, `#${identity.shortId}`].filter(Boolean).join(" · ");
+}
+
 export function isCronSessionKey(key: string): boolean {
   const normalized = key.trim().toLowerCase();
   if (!normalized) {
@@ -463,14 +458,21 @@ export function isCronSessionKey(key: string): boolean {
   return rest.startsWith("cron:");
 }
 
-function resolveSessionOptions(
+export type ChatSessionOption = {
+  key: string;
+  displayName?: string;
+  row?: SessionsListResult["sessions"][number];
+  isMain?: boolean;
+};
+
+export function resolveSessionOptions(
   sessionKey: string,
   sessions: SessionsListResult | null,
   mainSessionKey?: string | null,
   hideCron = false,
 ) {
   const seen = new Set<string>();
-  const options: Array<{ key: string; displayName?: string }> = [];
+  const options: ChatSessionOption[] = [];
 
   const resolvedMain = mainSessionKey && sessions?.sessions?.find((s) => s.key === mainSessionKey);
   const resolvedCurrent = sessions?.sessions?.find((s) => s.key === sessionKey);
@@ -481,6 +483,8 @@ function resolveSessionOptions(
     options.push({
       key: mainSessionKey,
       displayName: resolveSessionDisplayName(mainSessionKey, resolvedMain || undefined),
+      row: resolvedMain || undefined,
+      isMain: true,
     });
   }
 
@@ -491,6 +495,8 @@ function resolveSessionOptions(
     options.push({
       key: sessionKey,
       displayName: resolveSessionDisplayName(sessionKey, resolvedCurrent),
+      row: resolvedCurrent,
+      isMain: sessionKey === mainSessionKey,
     });
   }
 
@@ -502,6 +508,8 @@ function resolveSessionOptions(
         options.push({
           key: s.key,
           displayName: resolveSessionDisplayName(s.key, s),
+          row: s,
+          isMain: s.key === mainSessionKey,
         });
       }
     }
