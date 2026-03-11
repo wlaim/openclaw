@@ -5,7 +5,7 @@
 .shell {
   --shell-pad: 16px;
   --shell-gap: 16px;
-  --shell-nav-width: 220px;
+  --shell-nav-width: 196px;
   --shell-topbar-height: 56px;
   --shell-focus-duration: 200ms;
   --shell-focus-ease: var(--ease-out);
@@ -49,6 +49,7 @@
 
 .shell--chat-focus {
   grid-template-columns: 0px minmax(0, 1fr);
+  grid-template-rows: 0 1fr;
 }
 
 .shell--onboarding {
@@ -67,8 +68,23 @@
   padding-top: 0;
 }
 
+.shell--chat-focus .content--chat {
+  gap: 0;
+}
+
 .shell--chat-focus .content > * + * {
   margin-top: 0;
+}
+
+.shell--chat-focus .topbar {
+  height: 0;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* ===========================================
@@ -216,7 +232,7 @@
   grid-area: nav;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px 12px;
+  padding: 14px 10px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%);
   border-right: 1px solid rgba(124, 242, 214, 0.08);
   scrollbar-width: none; /* Firefox */
@@ -298,7 +314,7 @@
 
 /* Nav groups */
 .nav-group {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   display: grid;
   gap: 2px;
 }
@@ -323,7 +339,7 @@
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 5px 8px;
   font-size: 10px;
   font-weight: 500;
   color: var(--muted);
@@ -374,8 +390,8 @@
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 9px;
+  padding: 7px 9px;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
@@ -410,7 +426,7 @@
 }
 
 .nav-item__text {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
 }
@@ -626,6 +642,10 @@
       "content";
   }
 
+  .shell--chat-focus {
+    grid-template-rows: 0 0 1fr;
+  }
+
   .nav {
     position: static;
     max-height: none;
@@ -657,6 +677,17 @@
 
   .topbar-status {
     flex-wrap: wrap;
+  }
+
+  .shell--nav-collapsed {
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      "topbar"
+      "content";
+  }
+
+  .shell--nav-collapsed .nav {
+    display: none;
   }
 
   .table-head,

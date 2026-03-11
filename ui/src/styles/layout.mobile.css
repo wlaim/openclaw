@@ -132,6 +132,15 @@
     gap: 12px;
   }
 
+  .content--chat {
+    gap: 0;
+    padding: 0 4px 0;
+  }
+
+  .content--chat .card.chat {
+    padding: 0 4px 0;
+  }
+
   /* Cards */
   .card {
     padding: 12px;
@@ -215,8 +224,8 @@
   }
 
   .chat-thread {
-    margin-top: 8px;
-    padding: 12px 8px;
+    margin-top: 0;
+    padding: 8px 6px;
   }
 
   .chat-msg {
@@ -229,11 +238,11 @@
   }
 
   .chat-compose {
-    gap: 8px;
+    gap: 4px;
   }
 
   .chat-compose__field textarea {
-    min-height: 60px;
+    min-height: 48px;
     padding: 8px 10px;
     border-radius: var(--radius-md);
     font-size: 14px;

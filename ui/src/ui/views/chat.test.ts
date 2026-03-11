@@ -204,6 +204,40 @@ describe("chat view", () => {
     expect(container.textContent).not.toContain("New session");
   });
 
+  it("renders the composer as control, input, and send zones with a textarea shell", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          sessionKey: "clawclaw",
+          activeModel: "openai/gpt-5.4",
+          modelSuggestions: ["openai/gpt-5.4"],
+          sessions: {
+            ...createSessions(),
+            sessions: [{ key: "clawclaw", displayName: "clawclaw" }],
+          },
+        }),
+      ),
+      container,
+    );
+
+    const row = container.querySelector(".chat-compose__row");
+    expect(row).not.toBeNull();
+    expect(
+      row?.querySelector(".chat-compose__zone--controls .chat-compose__controls"),
+    ).not.toBeNull();
+    const textarea = row?.querySelector(".chat-compose__field .chat-compose__input-shell textarea");
+    expect(textarea).not.toBeNull();
+    expect(row?.querySelector(".chat-compose__zone--send .chat-compose__send")).not.toBeNull();
+    expect(row?.textContent).toContain("clawclaw");
+    expect(row?.textContent).toContain("gpt-5.4");
+    expect(row?.textContent).not.toContain("Session");
+    expect(row?.textContent).not.toContain("Model");
+    expect(row?.textContent).not.toContain("Message");
+    expect(row?.textContent).not.toContain("Connect to the gateway");
+    expect(textarea?.getAttribute("placeholder")).toBe("Input here");
+  });
+
   it("shows a new session button when aborting is unavailable", () => {
     const container = document.createElement("div");
     const onNewSession = vi.fn();
@@ -282,5 +316,29 @@ describe("chat view", () => {
     );
     expect(senderLabels).toContain("Iris");
     expect(senderLabels).toContain("Joaquin De Rojas");
+  });
+
+  it("renders mobile toolbar actions without duplicating session and model selectors", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          activeModel: "openai/gpt-5.2",
+          modelSuggestions: ["openai/gpt-5.2", "anthropic/claude-sonnet-4"],
+          sessions: {
+            ...createSessions(),
+            sessions: [{ key: "main", displayName: "Main Session" }],
+          },
+        }),
+      ),
+      container,
+    );
+
+    const toolbar = container.querySelector(".chat-mobile-toolbar");
+    expect(toolbar).not.toBeNull();
+    expect(toolbar?.textContent).toContain("New");
+    expect(toolbar?.textContent).not.toContain("Session");
+    expect(toolbar?.textContent).not.toContain("Model");
+    expect(container.querySelectorAll(".chat-mobile-toolbar__menu")).toHaveLength(0);
   });
 });

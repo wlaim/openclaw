@@ -35,6 +35,8 @@ export type ChatProps = {
   sessionKey: string;
   onSessionKeyChange: (next: string) => void;
   thinkingLevel: string | null;
+  modelSuggestions?: string[];
+  activeModel?: string | null;
   showThinking: boolean;
   loading: boolean;
   sending: boolean;
@@ -75,6 +77,7 @@ export type ChatProps = {
   onDraftChange: (next: string) => void;
   onSend: () => void;
   onAbort?: () => void;
+  onModelSelect?: (model: string) => void;
   onQueueRemove: (id: string) => void;
   onNewSession: () => void;
   onOpenSidebar?: (content: string) => void;
@@ -87,6 +90,10 @@ const COMPACTION_TOAST_DURATION_MS = 5000;
 const FALLBACK_TOAST_DURATION_MS = 8000;
 
 function adjustTextareaHeight(el: HTMLTextAreaElement) {
+  if (globalThis.matchMedia?.("(max-width: 640px)").matches) {
+    el.style.height = "";
+    return;
+  }
   el.style.height = "auto";
   el.style.height = `${el.scrollHeight}px`;
 }
@@ -238,6 +245,167 @@ function renderAttachmentPreview(props: ChatProps) {
   `;
 }
 
+function formatModelButtonLabel(model: string) {
+  const trimmed = model.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const slashIndex = trimmed.indexOf("/");
+  return slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
+}
+
+function resolveSessionButtonLabel(props: ChatProps): string {
+  const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);
+  const label =
+    activeSession?.label?.trim() ||
+    activeSession?.displayName?.trim() ||
+    props.sessionKey.trim() ||
+    "Session";
+  return label;
+}
+
+function closeParentDetails(target: EventTarget | null) {
+  if (!(target instanceof Element)) {
+    return;
+  }
+  target.closest("details")?.removeAttribute("open");
+}
+
+function renderMobileCompactControls(props: ChatProps) {
+  const refreshIcon = html`
+    <svg viewBox="0 0 24 24">
+      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+      <path d="M21 3v5h-5"></path>
+    </svg>
+  `;
+  const focusIcon = html`
+    <svg viewBox="0 0 24 24">
+      <path d="M4 7V4h3"></path>
+      <path d="M20 7V4h-3"></path>
+      <path d="M4 17v3h3"></path>
+      <path d="M20 17v3h-3"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  `;
+
+  return html`
+    <div class="chat-mobile-toolbar" aria-label="Chat controls">
+      <button
+        class="btn btn--sm chat-mobile-toolbar__action"
+        type="button"
+        ?disabled=${!props.connected}
+        @click=${props.onNewSession}
+      >
+        New
+      </button>
+
+      <button
+        class="btn btn--sm btn--icon chat-mobile-toolbar__icon"
+        type="button"
+        ?disabled=${!props.connected}
+        @click=${props.onRefresh}
+        title="Refresh chat"
+        aria-label="Refresh chat"
+      >
+        ${refreshIcon}
+      </button>
+
+      <button
+        class="btn btn--sm btn--icon chat-mobile-toolbar__icon ${props.focusMode ? "active" : ""}"
+        type="button"
+        @click=${props.onToggleFocusMode}
+        title=${props.focusMode ? "Exit focus mode" : "Enter focus mode"}
+        aria-label=${props.focusMode ? "Exit focus mode" : "Enter focus mode"}
+      >
+        ${focusIcon}
+      </button>
+    </div>
+  `;
+}
+
+function renderComposerCompactControls(props: ChatProps) {
+  const currentSessionLabel = resolveSessionButtonLabel(props);
+  const activeModel = props.activeModel?.trim() || "";
+  const mergedModels = [
+    activeModel,
+    ...(props.modelSuggestions ?? []).map((value) => value.trim()),
+  ].filter(Boolean);
+  const modelOptions = Array.from(new Set(mergedModels)).slice(0, 8);
+  const sessionOptions =
+    props.sessions?.sessions?.length && props.sessions.sessions.length > 0
+      ? props.sessions.sessions
+      : [{ key: props.sessionKey, displayName: currentSessionLabel }];
+
+  return html`
+    <div class="chat-compose__controls" aria-label="Composer controls">
+      <details class="chat-compose__menu">
+        <summary class="chat-compose__control" aria-label="Choose session">
+          <span class="chat-compose__control-value" title=${props.sessionKey}>${currentSessionLabel}</span>
+        </summary>
+        <div class="chat-compose__menu-panel">
+          <label class="field chat-compose__menu-field">
+            <select
+              aria-label="Session"
+              .value=${props.sessionKey}
+              ?disabled=${!props.connected}
+              @change=${(e: Event) => {
+                const target = e.target as HTMLSelectElement;
+                props.onSessionKeyChange(target.value);
+                closeParentDetails(target);
+              }}
+            >
+              ${sessionOptions.map(
+                (session) => html`
+                  <option value=${session.key} title=${session.key}>
+                    ${session.displayName ?? session.label ?? session.key}
+                  </option>
+                `,
+              )}
+            </select>
+          </label>
+        </div>
+      </details>
+
+      <details class="chat-compose__menu">
+        <summary class="chat-compose__control" aria-label="Choose model">
+          <span class="chat-compose__control-value" title=${activeModel || "Session default"}>
+            ${activeModel ? formatModelButtonLabel(activeModel) : "Default"}
+          </span>
+        </summary>
+        <div class="chat-compose__menu-panel chat-compose__menu-panel--models">
+          ${
+            modelOptions.length > 0
+              ? html`
+                <div class="chat-compose__model-list" role="toolbar" aria-label="Model switcher">
+                  ${modelOptions.map((model) => {
+                    const isActive = model === activeModel;
+                    return html`
+                      <button
+                        class="chat-models__button ${isActive ? "chat-models__button--active" : ""}"
+                        type="button"
+                        title=${model}
+                        ?disabled=${!props.connected || isActive || !props.onModelSelect}
+                        @click=${(e: Event) => {
+                          props.onModelSelect?.(model);
+                          closeParentDetails(e.currentTarget);
+                        }}
+                      >
+                        ${formatModelButtonLabel(model)}
+                      </button>
+                    `;
+                  })}
+                </div>
+              `
+              : html`
+                  <div class="muted">No model overrides available.</div>
+                `
+          }
+        </div>
+      </details>
+    </div>
+  `;
+}
+
 export function renderChat(props: ChatProps) {
   const canCompose = props.connected;
   const isBusy = props.sending || props.stream !== null;
@@ -249,13 +417,7 @@ export function renderChat(props: ChatProps) {
     name: props.assistantName,
     avatar: props.assistantAvatar ?? props.assistantAvatarUrl ?? null,
   };
-
-  const hasAttachments = (props.attachments?.length ?? 0) > 0;
-  const composePlaceholder = props.connected
-    ? hasAttachments
-      ? "Add a message or paste more images..."
-      : "Message (↩ to send, Shift+↩ for line breaks, paste images)"
-    : "Connect to the gateway to start chatting…";
+  const composePlaceholder = "Input here";
 
   const splitRatio = props.splitRatio ?? 0.6;
   const sidebarOpen = Boolean(props.sidebarOpen && props.onCloseSidebar);
@@ -344,6 +506,7 @@ export function renderChat(props: ChatProps) {
           class="chat-main"
           style="flex: ${sidebarOpen ? `0 0 ${splitRatio * 100}%` : "1 1 100%"}"
         >
+          ${renderMobileCompactControls(props)}
           ${thread}
         </div>
 
@@ -423,56 +586,71 @@ export function renderChat(props: ChatProps) {
 
       <div class="chat-compose">
         ${renderAttachmentPreview(props)}
+        ${
+          canAbort
+            ? html`
+              <div class="chat-compose__secondary-actions">
+                <button
+                  class="btn chat-compose__secondary chat-compose__secondary--stop"
+                  ?disabled=${!props.connected}
+                  @click=${props.onAbort}
+                >
+                  Stop
+                </button>
+              </div>
+            `
+            : nothing
+        }
         <div class="chat-compose__row">
-          <label class="field chat-compose__field">
-            <span>Message</span>
-            <textarea
-              ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
-              .value=${props.draft}
-              dir=${detectTextDirection(props.draft)}
-              ?disabled=${!props.connected}
-              @keydown=${(e: KeyboardEvent) => {
-                if (e.key !== "Enter") {
-                  return;
-                }
-                if (e.isComposing || e.keyCode === 229) {
-                  return;
-                }
-                if (e.shiftKey) {
-                  return;
-                } // Allow Shift+Enter for line breaks
-                if (!props.connected) {
-                  return;
-                }
-                e.preventDefault();
-                if (canCompose) {
-                  props.onSend();
-                }
-              }}
-              @input=${(e: Event) => {
-                const target = e.target as HTMLTextAreaElement;
-                adjustTextareaHeight(target);
-                props.onDraftChange(target.value);
-              }}
-              @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
-              placeholder=${composePlaceholder}
-            ></textarea>
-          </label>
-          <div class="chat-compose__actions">
-            <button
-              class="btn"
-              ?disabled=${!props.connected || (!canAbort && props.sending)}
-              @click=${canAbort ? props.onAbort : props.onNewSession}
-            >
-              ${canAbort ? "Stop" : "New session"}
-            </button>
-            <button
-              class="btn primary"
-              ?disabled=${!props.connected}
-              @click=${props.onSend}
-            >
-              ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
-            </button>
+          <div class="chat-compose__zone chat-compose__zone--controls">
+            ${renderComposerCompactControls(props)}
+          </div>
+          <div class="field chat-compose__field">
+            <div class="chat-compose__input-shell">
+              <textarea
+                ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
+                .value=${props.draft}
+                dir=${detectTextDirection(props.draft)}
+                aria-label="Input here"
+                ?disabled=${!props.connected}
+                @keydown=${(e: KeyboardEvent) => {
+                  if (e.key !== "Enter") {
+                    return;
+                  }
+                  if (e.isComposing || e.keyCode === 229) {
+                    return;
+                  }
+                  if (e.shiftKey) {
+                    return;
+                  } // Allow Shift+Enter for line breaks
+                  if (!props.connected) {
+                    return;
+                  }
+                  e.preventDefault();
+                  if (canCompose) {
+                    props.onSend();
+                  }
+                }}
+                @input=${(e: Event) => {
+                  const target = e.target as HTMLTextAreaElement;
+                  adjustTextareaHeight(target);
+                  props.onDraftChange(target.value);
+                }}
+                @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
+                placeholder=${composePlaceholder}
+              ></textarea>
+            </div>
+          </div>
+          <div class="chat-compose__zone chat-compose__zone--send">
+            <div class="chat-compose__actions">
+              <button
+                class="btn primary chat-compose__send"
+                ?disabled=${!props.connected}
+                @click=${props.onSend}
+              >
+                ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
+              </button>
+            </div>
           </div>
         </div>
       </div>

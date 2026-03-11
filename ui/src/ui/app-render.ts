@@ -251,11 +251,11 @@ export function renderApp(state: AppViewState) {
           </button>
           <div class="brand">
             <div class="brand-logo">
-              <img src=${basePath ? `${basePath}/favicon.svg` : "/favicon.svg"} alt="OpenClaw" />
+              <img src=${basePath ? `${basePath}/favicon.svg` : "/favicon.svg"} alt="clawlm" />
             </div>
             <div class="brand-text">
-              <div class="brand-title">Claw</div>
-              <div class="brand-sub">Claw Nest</div>
+              <div class="brand-title">clawlm</div>
+              <div class="brand-sub">Control</div>
             </div>
           </div>
         </div>
@@ -975,6 +975,10 @@ export function renderApp(state: AppViewState) {
                   void refreshChatAvatar(state);
                 },
                 thinkingLevel: state.chatThinkingLevel,
+                modelSuggestions: state.chatModelSuggestions,
+                activeModel:
+                  state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey)
+                    ?.model ?? null,
                 showThinking,
                 loading: state.chatLoading,
                 sending: state.chatSending,
@@ -1011,6 +1015,9 @@ export function renderApp(state: AppViewState) {
                 onDraftChange: (next) => (state.chatMessage = next),
                 attachments: state.chatAttachments,
                 onAttachmentsChange: (next) => (state.chatAttachments = next),
+                onModelSelect: async (model) => {
+                  await patchSession(state, state.sessionKey, { model });
+                },
                 onSend: () => state.handleSendChat(),
                 canAbort: Boolean(state.chatRunId),
                 onAbort: () => void state.handleAbortChat(),

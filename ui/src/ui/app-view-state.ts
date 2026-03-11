@@ -4,6 +4,7 @@ import type { CronModelSuggestionsState, CronState } from "./controllers/cron.ts
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
+import type { ChatModelSuggestionsState } from "./controllers/models.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
@@ -65,6 +66,7 @@ export type AppViewState = {
   fallbackStatus: FallbackStatus | null;
   chatAvatarUrl: string | null;
   chatThinkingLevel: string | null;
+  chatModelSuggestions: string[];
   chatQueue: ChatQueueItem[];
   chatManualRefreshInFlight: boolean;
   nodesLoading: boolean;
@@ -225,7 +227,8 @@ export type AppViewState = {
   | "cronRunsSortDir"
   | "cronBusy"
 > &
-  Pick<CronModelSuggestionsState, "cronModelSuggestions"> & {
+  Pick<CronModelSuggestionsState, "cronModelSuggestions"> &
+  Pick<ChatModelSuggestionsState, "chatModelSuggestions"> & {
     skillsLoading: boolean;
     skillsReport: SkillStatusReport | null;
     skillsError: string | null;
