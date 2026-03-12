@@ -5,6 +5,11 @@ import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
 import type { ChatModelSuggestionsState } from "./controllers/models.ts";
+import type {
+  SessionHygieneMode,
+  SessionHygieneProgress,
+  SessionHygieneResult,
+} from "./controllers/session-hygiene.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
@@ -69,6 +74,11 @@ export type AppViewState = {
   chatModelSuggestions: string[];
   chatQueue: ChatQueueItem[];
   chatManualRefreshInFlight: boolean;
+  sessionHygieneBusy: boolean;
+  sessionHygieneMode: SessionHygieneMode;
+  sessionHygieneError: string | null;
+  sessionHygieneProgress: SessionHygieneProgress | null;
+  sessionHygieneResult: SessionHygieneResult | null;
   nodesLoading: boolean;
   nodes: Array<Record<string, unknown>>;
   chatNewMessagesBelow: boolean;

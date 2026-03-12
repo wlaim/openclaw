@@ -523,7 +523,16 @@ export async function startGatewayServer(
     const resolvedOverride = resolveControlUiRootOverrideSync(controlUiRootOverride);
     const resolvedOverridePath = path.resolve(controlUiRootOverride);
     controlUiRootState = resolvedOverride
-      ? { kind: "resolved", path: resolvedOverride }
+      ? {
+          kind: isPackageProvenControlUiRootSync(resolvedOverride, {
+            moduleUrl: import.meta.url,
+            argv1: process.argv[1],
+            cwd: process.cwd(),
+          })
+            ? "bundled"
+            : "resolved",
+          path: resolvedOverride,
+        }
       : { kind: "invalid", path: resolvedOverridePath };
     if (!resolvedOverride) {
       log.warn(`gateway: controlUi.root not found at ${resolvedOverridePath}`);

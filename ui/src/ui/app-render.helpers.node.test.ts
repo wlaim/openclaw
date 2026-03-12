@@ -1,11 +1,15 @@
+import { render } from "lit";
 import { describe, expect, it } from "vitest";
 import {
   isCronSessionKey,
   parseSessionKey,
+  renderChatControls,
   resolveSessionDisplayName,
   resolveSessionIdentityInfo,
   resolveSessionOptionLabel,
+  switchChatSession,
 } from "./app-render.helpers.ts";
+import type { AppViewState } from "./app-view-state.ts";
 import type { SessionsListResult } from "./types.ts";
 
 type SessionRow = SessionsListResult["sessions"][number];
@@ -328,5 +332,225 @@ describe("resolveSessionOptionLabel", () => {
         { isMain: true },
       ),
     ).toBe("clawclaw · Main · #F4EC01");
+  });
+});
+
+describe("renderChatControls", () => {
+  it("renders icon-only header controls with accessible labels", () => {
+    const container = document.createElement("div");
+    const state = {
+      onboarding: false,
+      settings: {
+        chatShowThinking: false,
+        chatFocusMode: false,
+      },
+      connected: true,
+      chatLoading: false,
+      sessionsLoading: false,
+      sessionsHideCron: true,
+      sessionKey: "main",
+      sessionsResult: {
+        sessions: [
+          row({
+            key: "main",
+            label: "Primary Control Room",
+            sessionId: "sess_f4ec01",
+            model: "openai/gpt-5.2",
+          }),
+        ],
+      },
+      hello: null,
+      chatModelSuggestions: ["openai/gpt-5.2", "anthropic/claude-sonnet-4"],
+      loadAssistantIdentity: async () => {},
+      applySettings: () => {},
+    } as unknown as AppViewState;
+
+    render(renderChatControls(state), container);
+
+    const groups = container.querySelectorAll(".chat-controls__group");
+    expect(groups).toHaveLength(2);
+    expect(container.textContent).not.toContain("Select Session");
+    expect(container.textContent).not.toContain("Select Model");
+    expect(container.textContent).not.toContain("New Thread");
+    expect(container.textContent).not.toContain("Rename");
+    expect(container.querySelector('select[aria-label*="Select session"]')).not.toBeNull();
+    expect(container.querySelector('select[aria-label*="Select model"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="New thread"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label*="Rename session"]')).not.toBeNull();
+    expect(container.querySelector('summary[aria-label="Session hygiene"]')).not.toBeNull();
+    expect(container.textContent).toContain("Prepare this session for either an in-place cleanup");
+    expect(container.textContent).toContain("Session");
+    expect(container.textContent).toContain("Primary Control Room");
+    expect(container.textContent).toContain("Request");
+    expect(container.textContent).toContain("clean in place");
+    expect(container.textContent).toContain("Create compacted continuation");
+    expect(container.textContent).toContain(
+      "Creates a compacted continuation and opens it in chat",
+    );
+  });
+
+  it("surfaces continuation results after switching into the new session", () => {
+    const container = document.createElement("div");
+    const state = {
+      onboarding: false,
+      settings: {
+        chatShowThinking: false,
+        chatFocusMode: false,
+        sessionKey: "main",
+        lastActiveSessionKey: "main",
+      },
+      connected: true,
+      chatLoading: false,
+      sessionsLoading: false,
+      sessionsHideCron: true,
+      sessionKey: "agent:main:session-next",
+      sessionsResult: {
+        sessions: [
+          row({ key: "main", label: "Primary Control Room", sessionId: "sess_f4ec01" }),
+          row({
+            key: "agent:main:session-next",
+            label: "Continuation Thread",
+            sessionId: "sess_2b19d0",
+          }),
+        ],
+      },
+      hello: {
+        type: "hello-ok",
+        protocol: 1,
+        features: { methods: ["sessions.hygiene"], events: [] },
+      },
+      chatModelSuggestions: [],
+      sessionHygieneMode: "compacted-continuation",
+      sessionHygieneBusy: false,
+      sessionHygieneError: null,
+      sessionHygieneResult: {
+        mode: "compacted-continuation",
+        sessionKey: "main",
+        continuationSessionKey: "agent:main:session-next",
+        message: "Compacted continuation created.",
+        summary: "Compacted continuation created.",
+        detail: "Summary written into the continuation transcript.",
+        completedAt: Date.parse("2026-03-12T00:00:00Z"),
+      },
+      loadAssistantIdentity: async () => {},
+      applySettings: () => {},
+    } as unknown as AppViewState;
+
+    render(renderChatControls(state), container);
+
+    expect(container.textContent).toContain("Compacted continuation created.");
+    expect(container.textContent).toContain("Summary written into the continuation transcript.");
+    expect(container.textContent).toContain("Continuation open: agent:main:session-next");
+  });
+
+  it("renders live hygiene progress while work is in flight", () => {
+    const container = document.createElement("div");
+    const state = {
+      onboarding: false,
+      settings: {
+        chatShowThinking: false,
+        chatFocusMode: false,
+        sessionKey: "main",
+        lastActiveSessionKey: "main",
+      },
+      connected: true,
+      chatLoading: false,
+      sessionsLoading: false,
+      sessionsHideCron: true,
+      sessionKey: "main",
+      sessionsResult: {
+        sessions: [row({ key: "main", label: "Primary Control Room", sessionId: "sess_f4ec01" })],
+      },
+      hello: {
+        type: "hello-ok",
+        protocol: 1,
+        features: { methods: ["sessions.hygiene"], events: ["session.hygiene"] },
+      },
+      chatModelSuggestions: [],
+      sessionHygieneMode: "clean",
+      sessionHygieneBusy: true,
+      sessionHygieneError: null,
+      sessionHygieneProgress: {
+        mode: "clean",
+        sessionKey: "main",
+        phase: "compacting",
+        status: "running",
+        summary: "Compacting recent session history…",
+        detail: "Using a bounded working copy for faster cleanup.",
+        step: 3,
+        totalSteps: 5,
+        compacted: null,
+        continuationSessionKey: null,
+        updatedAt: Date.parse("2026-03-12T00:00:00Z"),
+      },
+      sessionHygieneResult: null,
+      loadAssistantIdentity: async () => {},
+      applySettings: () => {},
+    } as unknown as AppViewState;
+
+    render(renderChatControls(state), container);
+
+    expect(container.textContent).toContain("Compacting recent session history");
+    expect(container.textContent).toContain("Step 3 of 5");
+    expect(container.textContent).toContain("bounded working copy");
+  });
+});
+
+describe("switchChatSession", () => {
+  it("preserves the hygiene result only when explicitly provided", () => {
+    const state = {
+      sessionKey: "main",
+      chatMessage: "draft",
+      chatStream: "stream",
+      chatRunId: "run_123",
+      settings: {
+        sessionKey: "main",
+        lastActiveSessionKey: "main",
+      },
+      chatAttachments: [
+        { id: "att-1", dataUrl: "data:image/png;base64,abc", mimeType: "image/png" },
+      ],
+      chatQueue: [{ id: "q-1", text: "queued", createdAt: 1 }],
+      chatStreamStartedAt: 123,
+      sessionHygieneError: "old error",
+      sessionHygieneProgress: {
+        mode: "clean",
+        sessionKey: "main",
+        phase: "compacting",
+        status: "running",
+        summary: "Compacting recent session history…",
+        detail: null,
+        step: 2,
+        totalSteps: 5,
+        compacted: null,
+        continuationSessionKey: null,
+        updatedAt: 1,
+      },
+      sessionHygieneResult: {
+        mode: "clean",
+        sessionKey: "main",
+        continuationSessionKey: null,
+        message: "cleaned",
+        summary: "cleaned",
+        detail: null,
+        completedAt: 1,
+      },
+      applySettings: () => {},
+      resetToolStream() {},
+      resetChatScroll() {},
+    } as unknown as AppViewState;
+
+    const preservedResult = state.sessionHygieneResult;
+    switchChatSession(state, "agent:main:session-next", {
+      sessionHygieneResult: preservedResult,
+    });
+    expect(state.sessionHygieneResult).toBe(preservedResult);
+    expect(state.sessionHygieneError).toBeNull();
+    expect(state.sessionHygieneProgress).toBeNull();
+
+    switchChatSession(state, "main");
+    expect(state.sessionHygieneResult).toBeNull();
+    expect(state.sessionHygieneError).toBeNull();
+    expect(state.sessionHygieneProgress).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 import { Type } from "@sinclair/typebox";
+import { stringEnum } from "../../../agents/schema/typebox.js";
 import { NonEmptyString, SessionLabelString } from "./primitives.js";
 
 export const SessionsListParamsSchema = Type.Object(
@@ -104,6 +105,14 @@ export const SessionsCompactParamsSchema = Type.Object(
   {
     key: NonEmptyString,
     maxLines: Type.Optional(Type.Integer({ minimum: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+export const SessionsHygieneParamsSchema = Type.Object(
+  {
+    sessionKey: NonEmptyString,
+    mode: stringEnum(["clean", "compacted-continuation"] as const),
   },
   { additionalProperties: false },
 );

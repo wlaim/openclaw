@@ -2,11 +2,6 @@ import { html, nothing } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { repeat } from "lit/directives/repeat.js";
 import {
-  resolveSessionDisplayName,
-  resolveSessionOptionLabel,
-  type ChatSessionOption,
-} from "../app-render.helpers.ts";
-import {
   renderMessageGroup,
   renderReadingIndicatorGroup,
   renderStreamingGroup,
@@ -85,7 +80,7 @@ export type ChatProps = {
   onAbort?: () => void;
   onModelSelect?: (model: string) => void;
   onQueueRemove: (id: string) => void;
-  onNewSession: () => void;
+  onAddSession: () => void;
   onOpenSidebar?: (content: string) => void;
   onCloseSidebar?: () => void;
   onSplitRatioChange?: (ratio: number) => void;
@@ -246,47 +241,6 @@ function renderAttachmentPreview(props: ChatProps) {
   `;
 }
 
-function formatModelButtonLabel(model: string) {
-  const trimmed = model.trim();
-  if (!trimmed) {
-    return "";
-  }
-  const slashIndex = trimmed.indexOf("/");
-  return slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
-}
-
-function resolveSessionButtonLabel(props: ChatProps): string {
-  const activeSessionOption = props.sessionOptions?.find((entry) => entry.key === props.sessionKey);
-  const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);
-  return (
-    resolveSessionDisplayName(
-      props.sessionKey,
-      activeSessionOption?.row || activeSession || undefined,
-    ) ||
-    activeSessionOption?.displayName?.trim() ||
-    activeSession?.label?.trim() ||
-    activeSession?.displayName?.trim() ||
-    props.sessionKey.trim() ||
-    "Session"
-  );
-}
-
-function resolveSessionOptionText(
-  session: ChatSessionOption | SessionsListResult["sessions"][number],
-): string {
-  if ("row" in session) {
-    return resolveSessionOptionLabel(session.key, session.row, { isMain: session.isMain });
-  }
-  return resolveSessionOptionLabel(session.key, session);
-}
-
-function closeParentDetails(target: EventTarget | null) {
-  if (!(target instanceof Element)) {
-    return;
-  }
-  target.closest("details")?.removeAttribute("open");
-}
-
 function renderMobileCompactControls(props: ChatProps) {
   const refreshIcon = html`
     <svg viewBox="0 0 24 24">
@@ -310,7 +264,9 @@ function renderMobileCompactControls(props: ChatProps) {
         class="btn btn--sm chat-mobile-toolbar__action"
         type="button"
         ?disabled=${!props.connected}
-        @click=${props.onNewSession}
+        @click=${props.onAddSession}
+        title="New thread"
+        aria-label="New thread"
       >
         New
       </button>
@@ -339,97 +295,8 @@ function renderMobileCompactControls(props: ChatProps) {
   `;
 }
 
-function renderComposerCompactControls(props: ChatProps) {
-  const currentSessionLabel = resolveSessionButtonLabel(props);
-  const activeSessionOption = props.sessionOptions?.find((entry) => entry.key === props.sessionKey);
-  const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);
-  const currentSessionFullLabel = resolveSessionOptionText(
-    activeSessionOption ||
-      activeSession || { key: props.sessionKey, displayName: currentSessionLabel },
-  );
-  const activeModel = props.activeModel?.trim() || "";
-  const mergedModels = [
-    activeModel,
-    ...(props.modelSuggestions ?? []).map((value) => value.trim()),
-  ].filter(Boolean);
-  const modelOptions = Array.from(new Set(mergedModels)).slice(0, 8);
-  const sessionOptions =
-    props.sessionOptions && props.sessionOptions.length > 0
-      ? props.sessionOptions
-      : props.sessions?.sessions?.length && props.sessions.sessions.length > 0
-        ? props.sessions.sessions
-        : [{ key: props.sessionKey, displayName: currentSessionLabel }];
-
-  return html`
-    <div class="chat-compose__controls" aria-label="Composer controls">
-      <details class="chat-compose__menu">
-        <summary class="chat-compose__control" aria-label="Choose session">
-          <span class="chat-compose__control-value" title=${currentSessionFullLabel}
-            >${currentSessionLabel}</span
-          >
-        </summary>
-        <div class="chat-compose__menu-panel">
-          <label class="field chat-compose__menu-field">
-            <select
-              aria-label="Session"
-              .value=${props.sessionKey}
-              ?disabled=${!props.connected}
-              @change=${(e: Event) => {
-                const target = e.target as HTMLSelectElement;
-                props.onSessionKeyChange(target.value);
-                closeParentDetails(target);
-              }}
-            >
-              ${sessionOptions.map(
-                (session) => html`
-                  <option value=${session.key} title=${session.key}>
-                    ${resolveSessionOptionText(session)}
-                  </option>
-                `,
-              )}
-            </select>
-          </label>
-        </div>
-      </details>
-
-      <details class="chat-compose__menu">
-        <summary class="chat-compose__control" aria-label="Choose model">
-          <span class="chat-compose__control-value" title=${activeModel || "Session default"}>
-            ${activeModel ? formatModelButtonLabel(activeModel) : "Default"}
-          </span>
-        </summary>
-        <div class="chat-compose__menu-panel chat-compose__menu-panel--models">
-          ${
-            modelOptions.length > 0
-              ? html`
-                <div class="chat-compose__model-list" role="toolbar" aria-label="Model switcher">
-                  ${modelOptions.map((model) => {
-                    const isActive = model === activeModel;
-                    return html`
-                      <button
-                        class="chat-models__button ${isActive ? "chat-models__button--active" : ""}"
-                        type="button"
-                        title=${model}
-                        ?disabled=${!props.connected || isActive || !props.onModelSelect}
-                        @click=${(e: Event) => {
-                          props.onModelSelect?.(model);
-                          closeParentDetails(e.currentTarget);
-                        }}
-                      >
-                        ${formatModelButtonLabel(model)}
-                      </button>
-                    `;
-                  })}
-                </div>
-              `
-              : html`
-                  <div class="muted">No model overrides available.</div>
-                `
-          }
-        </div>
-      </details>
-    </div>
-  `;
+function renderComposerCompactControls(_props: ChatProps) {
+  return nothing;
 }
 
 function isMobileViewport(): boolean {

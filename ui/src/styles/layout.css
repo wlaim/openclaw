@@ -522,6 +522,9 @@
     linear-gradient(135deg, rgba(124, 242, 214, 0.08), rgba(255, 179, 138, 0.05)),
     rgba(17, 21, 31, 0.5);
   border-color: rgba(124, 242, 214, 0.14);
+  overflow: visible;
+  position: relative;
+  z-index: 20;
 }
 
 .page-title {

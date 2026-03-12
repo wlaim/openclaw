@@ -1,6 +1,7 @@
 import { toNumber } from "../format.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { SessionsListResult } from "../types.ts";
+import { generateUUID } from "../uuid.ts";
 
 export type SessionsState = {
   client: GatewayBrowserClient | null;
@@ -13,6 +14,53 @@ export type SessionsState = {
   sessionsIncludeGlobal: boolean;
   sessionsIncludeUnknown: boolean;
 };
+
+export type CreateSessionOptions = {
+  agentId?: string | null;
+  basedOn?: SessionsListResult["sessions"][number] | null;
+};
+
+function normalizeSessionAgentId(agentId: string | null | undefined): string {
+  const trimmed = (agentId ?? "").trim().toLowerCase();
+  return trimmed || "main";
+}
+
+function buildCreatedSessionKey(agentId: string): string {
+  const token = generateUUID().replace(/-/g, "").slice(0, 12);
+  return `agent:${agentId}:session-${token}`;
+}
+
+function buildCreatedSessionLabel(sessionKey: string): string {
+  const suffix = sessionKey.slice(-4).toUpperCase();
+  return `New Session #${suffix}`;
+}
+
+function cloneSessionOverrides(source: SessionsListResult["sessions"][number] | null | undefined): {
+  model?: string;
+  thinkingLevel?: string;
+  verboseLevel?: string;
+  reasoningLevel?: string;
+} {
+  const patch: {
+    model?: string;
+    thinkingLevel?: string;
+    verboseLevel?: string;
+    reasoningLevel?: string;
+  } = {};
+  if (source?.model?.trim()) {
+    patch.model = source.model.trim();
+  }
+  if (source?.thinkingLevel?.trim()) {
+    patch.thinkingLevel = source.thinkingLevel.trim();
+  }
+  if (source?.verboseLevel?.trim()) {
+    patch.verboseLevel = source.verboseLevel.trim();
+  }
+  if (source?.reasoningLevel?.trim()) {
+    patch.reasoningLevel = source.reasoningLevel.trim();
+  }
+  return patch;
+}
 
 export async function loadSessions(
   state: SessionsState,
@@ -92,6 +140,35 @@ export async function patchSession(
     await loadSessions(state);
   } catch (err) {
     state.sessionsError = String(err);
+  }
+}
+
+export async function createSession(
+  state: SessionsState,
+  options?: CreateSessionOptions,
+): Promise<{ key: string } | null> {
+  if (!state.client || !state.connected) {
+    return null;
+  }
+  if (state.sessionsLoading) {
+    return null;
+  }
+
+  state.sessionsError = null;
+  const agentId = normalizeSessionAgentId(options?.agentId);
+  const key = buildCreatedSessionKey(agentId);
+
+  try {
+    await state.client.request("sessions.patch", {
+      key,
+      label: buildCreatedSessionLabel(key),
+      ...cloneSessionOverrides(options?.basedOn),
+    });
+    await loadSessions(state);
+    return { key };
+  } catch (err) {
+    state.sessionsError = String(err);
+    return null;
   }
 }
 

@@ -1,15 +1,23 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { getAcpSessionManager } from "../../acp/control-plane/manager.js";
-import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { clearBootstrapSnapshot } from "../../agents/bootstrap-cache.js";
+import { resolveContextWindowInfo } from "../../agents/context-window-guard.js";
+import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
+import { compactEmbeddedPiSessionDirect } from "../../agents/pi-embedded-runner/compact.runtime.js";
 import { abortEmbeddedPiRun, waitForEmbeddedPiRunEnd } from "../../agents/pi-embedded.js";
 import { stopSubagentsForRequester } from "../../auto-reply/reply/abort.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue.js";
+import { normalizeReasoningLevel, normalizeThinkLevel } from "../../auto-reply/thinking.js";
 import { closeTrackedBrowserTabsForSessions } from "../../browser/session-tab-registry.js";
 import { loadConfig } from "../../config/config.js";
 import {
+  appendAssistantMessageToSessionTranscript,
   loadSessionStore,
+  mergeSessionEntry,
   snapshotSessionOrigin,
   resolveMainSessionKey,
   type SessionEntry,
@@ -30,6 +38,7 @@ import {
   errorShape,
   validateSessionsCompactParams,
   validateSessionsDeleteParams,
+  validateSessionsHygieneParams,
   validateSessionsListParams,
   validateSessionsPatchParams,
   validateSessionsPreviewParams,
@@ -39,6 +48,7 @@ import {
 import {
   archiveFileOnDisk,
   archiveSessionTranscripts,
+  deriveSessionTitle,
   listSessionsFromStore,
   loadCombinedSessionStoreForGateway,
   loadSessionEntry,
@@ -54,8 +64,30 @@ import {
 } from "../session-utils.js";
 import { applySessionsPatchToStore } from "../sessions-patch.js";
 import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
-import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.js";
+import type {
+  GatewayClient,
+  GatewayRequestContext,
+  GatewayRequestHandlers,
+  RespondFn,
+} from "./types.js";
 import { assertValidParams } from "./validation.js";
+
+const SESSION_HYGIENE_EVENT = "session.hygiene";
+const SESSION_HYGIENE_BOUNDED_COPY_THRESHOLD_BYTES = 1_500_000;
+const SESSION_HYGIENE_BOUNDED_COPY_MAX_BYTES = 750_000;
+
+type SessionHygienePhase =
+  | "starting"
+  | "resolving-transcript"
+  | "preparing-working-copy"
+  | "compacting"
+  | "writing-cleaned-session"
+  | "creating-continuation"
+  | "seeding-continuation"
+  | "completed"
+  | "failed";
+
+type SessionHygieneMode = "clean" | "compacted-continuation";
 
 function requireSessionKey(key: unknown, respond: RespondFn): string | null {
   const raw =
@@ -326,6 +358,388 @@ async function cleanupSessionBeforeMutation(params: {
     entry: params.entry,
     reason: params.reason,
   });
+}
+
+function resolveHygieneAgentId(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  target: ReturnType<typeof resolveGatewaySessionStoreTarget>;
+  key: string;
+}) {
+  const parsed = parseAgentSessionKey(params.target.canonicalKey ?? params.key);
+  return normalizeAgentId(
+    parsed?.agentId ?? params.target.agentId ?? resolveDefaultAgentId(params.cfg),
+  );
+}
+
+function resolveHygieneWorkspaceDir(cfg: ReturnType<typeof loadConfig>, agentId: string) {
+  return (
+    resolveAgentWorkspaceDir(cfg, agentId) ??
+    path.join(os.tmpdir(), "openclaw-session-hygiene", normalizeAgentId(agentId))
+  );
+}
+
+function resolveSessionTranscriptPath(params: {
+  sessionId: string;
+  storePath: string;
+  sessionFile?: string;
+  agentId?: string;
+}) {
+  return resolveSessionTranscriptCandidates(
+    params.sessionId,
+    params.storePath,
+    params.sessionFile,
+    params.agentId,
+  ).find((candidate) => fs.existsSync(candidate));
+}
+
+function buildContinuationSessionKey(agentId: string) {
+  return `agent:${normalizeAgentId(agentId)}:session-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+function buildContinuationLabel(entry: SessionEntry | undefined, continuationSessionKey: string) {
+  const title = deriveSessionTitle(entry)?.trim();
+  if (title) {
+    return `${title} continuation`;
+  }
+  return `Continuation #${continuationSessionKey.slice(-4).toUpperCase()}`;
+}
+
+function buildContinuationEntry(params: {
+  sourceEntry: SessionEntry;
+  continuationSessionId: string;
+  continuationLabel: string;
+  resolvedModel: { provider: string; model: string };
+}) {
+  return mergeSessionEntry(undefined, {
+    sessionId: params.continuationSessionId,
+    updatedAt: Date.now(),
+    systemSent: false,
+    abortedLastRun: false,
+    thinkingLevel: params.sourceEntry.thinkingLevel,
+    verboseLevel: params.sourceEntry.verboseLevel,
+    reasoningLevel: params.sourceEntry.reasoningLevel,
+    elevatedLevel: params.sourceEntry.elevatedLevel,
+    ttsAuto: params.sourceEntry.ttsAuto,
+    execHost: params.sourceEntry.execHost,
+    execSecurity: params.sourceEntry.execSecurity,
+    execAsk: params.sourceEntry.execAsk,
+    execNode: params.sourceEntry.execNode,
+    responseUsage: params.sourceEntry.responseUsage,
+    providerOverride: params.sourceEntry.providerOverride,
+    modelOverride: params.sourceEntry.modelOverride,
+    authProfileOverride: params.sourceEntry.authProfileOverride,
+    authProfileOverrideSource: params.sourceEntry.authProfileOverrideSource,
+    groupActivation: params.sourceEntry.groupActivation,
+    groupActivationNeedsSystemIntro: params.sourceEntry.groupActivationNeedsSystemIntro,
+    sendPolicy: params.sourceEntry.sendPolicy,
+    queueMode: params.sourceEntry.queueMode,
+    queueDebounceMs: params.sourceEntry.queueDebounceMs,
+    queueCap: params.sourceEntry.queueCap,
+    queueDrop: params.sourceEntry.queueDrop,
+    modelProvider: params.resolvedModel.provider,
+    model: params.resolvedModel.model,
+    contextTokens: params.sourceEntry.contextTokens,
+    label: params.continuationLabel,
+    displayName: params.continuationLabel,
+    channel: params.sourceEntry.channel,
+    groupId: params.sourceEntry.groupId,
+    subject: params.sourceEntry.subject,
+    groupChannel: params.sourceEntry.groupChannel,
+    space: params.sourceEntry.space,
+    origin: snapshotSessionOrigin(params.sourceEntry),
+    deliveryContext: params.sourceEntry.deliveryContext,
+    lastChannel: params.sourceEntry.lastChannel,
+    lastTo: params.sourceEntry.lastTo,
+    lastAccountId: params.sourceEntry.lastAccountId,
+    lastThreadId: params.sourceEntry.lastThreadId,
+    skillsSnapshot: params.sourceEntry.skillsSnapshot,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    totalTokensFresh: true,
+  });
+}
+
+async function runSessionHygieneCompaction(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  sessionKey: string;
+  sessionId: string;
+  sessionFile: string;
+  workspaceDir: string;
+  provider: string;
+  model: string;
+  thinkingLevel?: string;
+  reasoningLevel?: string;
+}) {
+  return await compactEmbeddedPiSessionDirect({
+    config: params.cfg,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+    sessionFile: params.sessionFile,
+    workspaceDir: params.workspaceDir,
+    provider: params.provider,
+    model: params.model,
+    thinkLevel: normalizeThinkLevel(params.thinkingLevel),
+    reasoningLevel: normalizeReasoningLevel(params.reasoningLevel),
+    trigger: "manual",
+  });
+}
+
+type SessionHygieneBudgetDetails = {
+  tokensBefore: number | null;
+  budgetTokens: number | null;
+  contextWindowTokens: number | null;
+  maxHistoryShare: number | null;
+};
+
+function formatTokenCount(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.floor(value)).toLocaleString("en-US");
+}
+
+function resolveSessionHygieneBudgetDetails(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  provider: string;
+  model: string;
+  result?: { tokensBefore?: number };
+}): SessionHygieneBudgetDetails {
+  const tokensBefore =
+    typeof params.result?.tokensBefore === "number" && Number.isFinite(params.result.tokensBefore)
+      ? Math.max(0, Math.floor(params.result.tokensBefore))
+      : null;
+  const maxHistoryShare = params.cfg.agents?.defaults?.compaction?.maxHistoryShare ?? 0.5;
+  const contextWindowTokens = resolveContextWindowInfo({
+    cfg: params.cfg,
+    provider: params.provider,
+    modelId: params.model,
+    defaultTokens: DEFAULT_CONTEXT_TOKENS,
+  }).tokens;
+  return {
+    tokensBefore,
+    budgetTokens: Math.max(1, Math.floor(contextWindowTokens * maxHistoryShare)),
+    contextWindowTokens,
+    maxHistoryShare,
+  };
+}
+
+function buildSessionHygieneNoOpReason(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  provider: string;
+  model: string;
+  result?: { tokensBefore?: number };
+  reason?: string;
+}): { summary: string; detail: string | null; budget: SessionHygieneBudgetDetails } {
+  const budget = resolveSessionHygieneBudgetDetails({
+    cfg: params.cfg,
+    provider: params.provider,
+    model: params.model,
+    result: params.result,
+  });
+  const before = formatTokenCount(budget.tokensBefore);
+  const budgetTokens = formatTokenCount(budget.budgetTokens);
+  const windowTokens = formatTokenCount(budget.contextWindowTokens);
+  const sharePercent =
+    typeof budget.maxHistoryShare === "number" && Number.isFinite(budget.maxHistoryShare)
+      ? Math.round(budget.maxHistoryShare * 100)
+      : null;
+  if (before && budgetTokens) {
+    return {
+      summary: `No compaction needed: ${before} estimated history tokens already fit within the ${budgetTokens}-token compaction budget.`,
+      detail:
+        `Current history is already within budget (${before} <= ${budgetTokens} tokens)` +
+        (sharePercent && windowTokens
+          ? `, which keeps history under ${sharePercent}% of the ${windowTokens}-token context window.`
+          : "."),
+      budget,
+    };
+  }
+  const reason = params.reason?.trim();
+  return {
+    summary: reason
+      ? `No compaction needed: ${reason}.`
+      : "No compaction needed: current history is already within the compaction budget.",
+    detail: null,
+    budget,
+  };
+}
+
+function buildSessionHygieneSuccessResult(params: {
+  mode: "clean" | "compacted-continuation";
+  sessionKey: string;
+  compacted: boolean;
+  summary: string;
+  detail?: string | null;
+  budget?: SessionHygieneBudgetDetails;
+  continuationSessionKey?: string | null;
+}) {
+  const continuationSessionKey = params.continuationSessionKey ?? null;
+  return {
+    ok: true as const,
+    mode: params.mode,
+    sessionKey: params.sessionKey,
+    continuationSessionKey,
+    compacted: params.compacted,
+    message: params.summary,
+    summary: params.summary,
+    detail: params.detail ?? null,
+    budget: params.budget,
+    continuation: continuationSessionKey
+      ? {
+          sessionKey: continuationSessionKey,
+          message: params.summary,
+        }
+      : undefined,
+  };
+}
+
+function broadcastSessionHygieneEvent(params: {
+  context: GatewayRequestContext;
+  client: GatewayClient | null;
+  payload: Record<string, unknown>;
+}) {
+  if (params.client?.connId) {
+    params.context.broadcastToConnIds(
+      SESSION_HYGIENE_EVENT,
+      params.payload,
+      new Set([params.client.connId]),
+      {
+        dropIfSlow: true,
+      },
+    );
+    return;
+  }
+  params.context.broadcast(SESSION_HYGIENE_EVENT, params.payload, { dropIfSlow: true });
+}
+
+function createSessionHygieneProgressReporter(params: {
+  context: GatewayRequestContext;
+  client: GatewayClient | null;
+  sessionKey: string;
+  mode: SessionHygieneMode;
+}) {
+  const emit = (payload: {
+    phase: SessionHygienePhase;
+    status?: "running" | "completed" | "failed";
+    summary: string;
+    detail?: string | null;
+    step?: number | null;
+    totalSteps?: number | null;
+    compacted?: boolean | null;
+    continuationSessionKey?: string | null;
+  }) => {
+    broadcastSessionHygieneEvent({
+      context: params.context,
+      client: params.client,
+      payload: {
+        sessionKey: params.sessionKey,
+        mode: params.mode,
+        phase: payload.phase,
+        status:
+          payload.status ??
+          (payload.phase === "failed"
+            ? "failed"
+            : payload.phase === "completed"
+              ? "completed"
+              : "running"),
+        summary: payload.summary,
+        detail: payload.detail ?? null,
+        step: payload.step ?? null,
+        totalSteps: payload.totalSteps ?? null,
+        compacted: payload.compacted ?? null,
+        continuationSessionKey: payload.continuationSessionKey ?? null,
+        updatedAt: Date.now(),
+      },
+    });
+  };
+  return {
+    emit,
+    fail: (summary: string, detail?: string | null) =>
+      emit({ phase: "failed", status: "failed", summary, detail }),
+    complete: (
+      summary: string,
+      opts?: {
+        detail?: string | null;
+        compacted?: boolean | null;
+        continuationSessionKey?: string | null;
+      },
+    ) =>
+      emit({
+        phase: "completed",
+        status: "completed",
+        summary,
+        detail: opts?.detail,
+        compacted: opts?.compacted,
+        continuationSessionKey: opts?.continuationSessionKey,
+      }),
+  };
+}
+
+function readTranscriptTailChunk(filePath: string, maxBytes: number): string {
+  const stat = fs.statSync(filePath);
+  if (stat.size <= 0) {
+    return "";
+  }
+  const bytesToRead = Math.max(1, Math.min(Math.trunc(maxBytes), stat.size));
+  const start = Math.max(0, stat.size - bytesToRead);
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buf = Buffer.alloc(bytesToRead);
+    const bytesRead = fs.readSync(fd, buf, 0, bytesToRead, start);
+    if (bytesRead <= 0) {
+      return "";
+    }
+    let chunk = buf.toString("utf-8", 0, bytesRead);
+    if (start > 0) {
+      const firstNewline = chunk.indexOf("\n");
+      chunk = firstNewline >= 0 ? chunk.slice(firstNewline + 1) : "";
+    }
+    return chunk.trim() ? `${chunk.trimEnd()}\n` : "";
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function createBoundedSessionHygieneWorkingCopy(params: {
+  sourcePath: string;
+  tempDir: string;
+  maxBytes?: number;
+}) {
+  const chunk = readTranscriptTailChunk(
+    params.sourcePath,
+    params.maxBytes ?? SESSION_HYGIENE_BOUNDED_COPY_MAX_BYTES,
+  );
+  if (!chunk.trim()) {
+    return null;
+  }
+  const filePath = path.join(params.tempDir, `${randomUUID()}.jsonl`);
+  fs.writeFileSync(filePath, chunk, "utf-8");
+  return filePath;
+}
+
+function createSessionHygieneWorkingCopy(params: {
+  sourcePath: string;
+  tempDir: string;
+  sessionId: string;
+}) {
+  const workingCopyPath = path.join(params.tempDir, `${params.sessionId}.jsonl`);
+  let bounded = false;
+  const stat = fs.statSync(params.sourcePath);
+  if (stat.size >= SESSION_HYGIENE_BOUNDED_COPY_THRESHOLD_BYTES) {
+    const boundedCopyPath = createBoundedSessionHygieneWorkingCopy({
+      sourcePath: params.sourcePath,
+      tempDir: params.tempDir,
+    });
+    if (boundedCopyPath) {
+      fs.renameSync(boundedCopyPath, workingCopyPath);
+      bounded = true;
+    }
+  }
+  if (!fs.existsSync(workingCopyPath)) {
+    fs.copyFileSync(params.sourcePath, workingCopyPath);
+  }
+  return { workingCopyPath, bounded };
 }
 
 export const sessionsHandlers: GatewayRequestHandlers = {
@@ -750,5 +1164,357 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       },
       undefined,
     );
+  },
+  "sessions.hygiene": async ({ params, respond, context, client }) => {
+    if (!assertValidParams(params, validateSessionsHygieneParams, "sessions.hygiene", respond)) {
+      return;
+    }
+    const p = params;
+    const key = requireSessionKey(p.sessionKey, respond);
+    if (!key) {
+      return;
+    }
+    const progress = createSessionHygieneProgressReporter({
+      context,
+      client,
+      sessionKey: key,
+      mode: p.mode,
+    });
+    progress.emit({
+      phase: "starting",
+      summary: "Starting session hygiene…",
+      step: 1,
+      totalSteps: 5,
+    });
+
+    const { cfg, target, storePath } = resolveGatewaySessionTargetFromKey(key);
+    const canonicalSessionKey = target.canonicalKey ?? key;
+    progress.emit({
+      phase: "resolving-transcript",
+      summary: "Resolving current session transcript…",
+      detail: canonicalSessionKey === key ? null : `Resolved ${key} to ${canonicalSessionKey}.`,
+      step: 2,
+      totalSteps: 5,
+    });
+    const { entry } = loadSessionEntry(canonicalSessionKey);
+    if (!entry?.sessionId) {
+      const summary = "No session transcript was available to compact.";
+      progress.complete(summary, { compacted: false });
+      respond(
+        true,
+        {
+          ok: true,
+          mode: p.mode,
+          sessionKey: canonicalSessionKey,
+          continuationSessionKey: null,
+          compacted: false,
+          message: summary,
+          summary,
+        },
+        undefined,
+      );
+      return;
+    }
+
+    const transcriptPath = resolveSessionTranscriptPath({
+      sessionId: entry.sessionId,
+      storePath,
+      sessionFile: entry.sessionFile,
+      agentId: target.agentId,
+    });
+    if (!transcriptPath) {
+      const summary = "No session transcript was available to compact.";
+      progress.complete(summary, { compacted: false });
+      respond(
+        true,
+        {
+          ok: true,
+          mode: p.mode,
+          sessionKey: canonicalSessionKey,
+          continuationSessionKey: null,
+          compacted: false,
+          message: summary,
+          summary,
+        },
+        undefined,
+      );
+      return;
+    }
+
+    const agentId = resolveHygieneAgentId({ cfg, target, key: canonicalSessionKey });
+    const workspaceDir = resolveHygieneWorkspaceDir(cfg, agentId);
+    const resolvedModel = resolveSessionModelRef(cfg, entry, agentId);
+
+    if (p.mode === "clean") {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-hygiene-"));
+      try {
+        const compactSessionId = randomUUID();
+        progress.emit({
+          phase: "preparing-working-copy",
+          summary: "Preparing a working copy for cleanup…",
+          step: 3,
+          totalSteps: 5,
+        });
+        const { workingCopyPath, bounded } = createSessionHygieneWorkingCopy({
+          sourcePath: transcriptPath,
+          tempDir: tmpDir,
+          sessionId: compactSessionId,
+        });
+        progress.emit({
+          phase: "compacting",
+          summary: "Compacting recent session history…",
+          detail: bounded
+            ? "Using a bounded working copy for faster cleanup."
+            : "Using a full working copy before swapping the cleaned transcript into place.",
+          step: 4,
+          totalSteps: 5,
+        });
+        const compacted = await runSessionHygieneCompaction({
+          cfg,
+          sessionKey: canonicalSessionKey,
+          sessionId: compactSessionId,
+          sessionFile: workingCopyPath,
+          workspaceDir,
+          provider: resolvedModel.provider,
+          model: resolvedModel.model,
+          thinkingLevel: entry.thinkingLevel,
+          reasoningLevel: entry.reasoningLevel,
+        });
+        if (!compacted.ok) {
+          progress.fail("Session hygiene failed.", compacted.reason || null);
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.UNAVAILABLE, compacted.reason || "Session hygiene failed."),
+          );
+          return;
+        }
+        if (compacted.compacted || !bounded) {
+          progress.emit({
+            phase: "writing-cleaned-session",
+            summary: "Writing cleaned session back to the live transcript…",
+            detail: bounded
+              ? "Replacing the current transcript with the compacted working copy."
+              : "Replacing the current transcript with the cleaned working copy.",
+            step: 5,
+            totalSteps: 5,
+            compacted: compacted.compacted,
+          });
+          fs.copyFileSync(workingCopyPath, transcriptPath);
+        }
+        const summary =
+          compacted.result?.summary?.trim() ||
+          (compacted.compacted
+            ? "Current session cleaned."
+            : buildSessionHygieneNoOpReason({
+                cfg,
+                provider: resolvedModel.provider,
+                model: resolvedModel.model,
+                result: compacted.result,
+                reason: compacted.reason,
+              }).summary);
+        const noOpReason = compacted.compacted
+          ? null
+          : buildSessionHygieneNoOpReason({
+              cfg,
+              provider: resolvedModel.provider,
+              model: resolvedModel.model,
+              result: compacted.result,
+              reason: compacted.reason,
+            });
+        progress.complete(summary, {
+          compacted: compacted.compacted,
+          detail: compacted.compacted
+            ? bounded
+              ? "Live session cleanup ran against a bounded working copy."
+              : "Live session cleanup completed from a temporary working copy."
+            : noOpReason?.detail,
+        });
+        respond(
+          true,
+          buildSessionHygieneSuccessResult({
+            mode: p.mode,
+            sessionKey: canonicalSessionKey,
+            continuationSessionKey: null,
+            compacted: compacted.compacted,
+            summary,
+            detail: compacted.compacted ? null : noOpReason?.detail,
+            budget: noOpReason?.budget,
+          }),
+          undefined,
+        );
+        return;
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-hygiene-"));
+    try {
+      const compactSessionId = randomUUID();
+      progress.emit({
+        phase: "preparing-working-copy",
+        summary: "Preparing a temporary transcript copy…",
+        detail: "The current session stays unchanged while the continuation is built.",
+        step: 3,
+        totalSteps: 6,
+      });
+      const { workingCopyPath: compactSessionFile, bounded } = createSessionHygieneWorkingCopy({
+        sourcePath: transcriptPath,
+        tempDir: tmpDir,
+        sessionId: compactSessionId,
+      });
+
+      progress.emit({
+        phase: "compacting",
+        summary: "Compacting recent session history…",
+        detail: bounded
+          ? "Using a bounded working copy so continuation compaction stays focused on the recent transcript tail."
+          : "Building the continuation summary from a full temporary transcript copy.",
+        step: 4,
+        totalSteps: 6,
+      });
+      const compacted = await runSessionHygieneCompaction({
+        cfg,
+        sessionKey: canonicalSessionKey,
+        sessionId: compactSessionId,
+        sessionFile: compactSessionFile,
+        workspaceDir,
+        provider: resolvedModel.provider,
+        model: resolvedModel.model,
+        thinkingLevel: entry.thinkingLevel,
+        reasoningLevel: entry.reasoningLevel,
+      });
+      if (!compacted.ok) {
+        progress.fail("Session hygiene failed.", compacted.reason || null);
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, compacted.reason || "Session hygiene failed."),
+        );
+        return;
+      }
+
+      const summary =
+        compacted.result?.summary?.trim() ||
+        (compacted.compacted
+          ? "Compacted continuation created."
+          : buildSessionHygieneNoOpReason({
+              cfg,
+              provider: resolvedModel.provider,
+              model: resolvedModel.model,
+              result: compacted.result,
+              reason: compacted.reason,
+            }).summary);
+      if (!compacted.compacted) {
+        const noOpReason = buildSessionHygieneNoOpReason({
+          cfg,
+          provider: resolvedModel.provider,
+          model: resolvedModel.model,
+          result: compacted.result,
+          reason: compacted.reason,
+        });
+        progress.complete(summary, {
+          compacted: false,
+          detail: noOpReason.detail,
+        });
+        respond(
+          true,
+          buildSessionHygieneSuccessResult({
+            mode: p.mode,
+            sessionKey: canonicalSessionKey,
+            continuationSessionKey: null,
+            compacted: false,
+            summary,
+            detail: noOpReason.detail,
+            budget: noOpReason.budget,
+          }),
+          undefined,
+        );
+        return;
+      }
+
+      const continuationSessionKey = buildContinuationSessionKey(agentId);
+      const continuationLabel = buildContinuationLabel(entry, continuationSessionKey);
+      const continuationSessionId = randomUUID();
+      progress.emit({
+        phase: "creating-continuation",
+        summary: "Creating compacted continuation…",
+        detail: `Creating ${continuationLabel}.`,
+        step: 5,
+        totalSteps: 6,
+        compacted: true,
+      });
+      await updateSessionStore(storePath, (store) => {
+        store[continuationSessionKey] = buildContinuationEntry({
+          sourceEntry: entry,
+          continuationSessionId,
+          continuationLabel,
+          resolvedModel,
+        });
+      });
+
+      progress.emit({
+        phase: "seeding-continuation",
+        summary: "Seeding continuation transcript…",
+        detail: bounded
+          ? "Writing the compacted summary into the new continuation created from the bounded working copy."
+          : "Writing the compacted summary into the new continuation transcript.",
+        step: 6,
+        totalSteps: 6,
+        compacted: true,
+      });
+      const mirrored = await appendAssistantMessageToSessionTranscript({
+        agentId,
+        storePath,
+        sessionKey: continuationSessionKey,
+        text: summary,
+      });
+      if (!mirrored.ok) {
+        const removedContinuation = await updateSessionStore(storePath, (store) => {
+          const removed = store[continuationSessionKey];
+          delete store[continuationSessionKey];
+          return removed;
+        });
+        archiveSessionTranscriptsForSession({
+          sessionId: removedContinuation?.sessionId ?? continuationSessionId,
+          storePath,
+          sessionFile: removedContinuation?.sessionFile,
+          agentId,
+          reason: "deleted",
+        });
+        progress.fail(
+          "Compacted continuation failed while seeding the new transcript.",
+          mirrored.reason,
+        );
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.UNAVAILABLE,
+            `Compacted continuation created but transcript seed failed: ${mirrored.reason}`,
+          ),
+        );
+        return;
+      }
+
+      progress.complete(summary, {
+        compacted: true,
+        continuationSessionKey,
+      });
+      respond(
+        true,
+        buildSessionHygieneSuccessResult({
+          mode: p.mode,
+          sessionKey: canonicalSessionKey,
+          continuationSessionKey,
+          compacted: true,
+          summary,
+        }),
+        undefined,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   },
 };

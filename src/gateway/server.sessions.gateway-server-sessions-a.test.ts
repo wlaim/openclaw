@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
+import { rawDataToString } from "../infra/ws.js";
 import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "./protocol/client-info.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { createToolSummaryPreviewTranscriptLines } from "./session-preview.test-helpers.js";
@@ -11,6 +12,7 @@ import {
   connectOk,
   embeddedRunMock,
   installGatewayTestHooks,
+  onceMessage,
   piSdkMock,
   rpcReq,
   testState,
@@ -50,6 +52,18 @@ const acpRuntimeMocks = vi.hoisted(() => ({
 }));
 const browserSessionTabMocks = vi.hoisted(() => ({
   closeTrackedBrowserTabsForSessions: vi.fn(async () => 0),
+}));
+const sessionHygieneMocks = vi.hoisted(() => ({
+  compactEmbeddedPiSessionDirect: vi.fn(async () => ({
+    ok: true,
+    compacted: true,
+    result: {
+      summary: "Compacted summary",
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 120,
+      tokensAfter: 60,
+    },
+  })),
 }));
 
 vi.mock("../auto-reply/reply/queue.js", async () => {
@@ -134,6 +148,15 @@ vi.mock("../browser/session-tab-registry.js", async (importOriginal) => {
   };
 });
 
+vi.mock("../agents/pi-embedded-runner/compact.runtime.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../agents/pi-embedded-runner/compact.runtime.js")>();
+  return {
+    ...actual,
+    compactEmbeddedPiSessionDirect: sessionHygieneMocks.compactEmbeddedPiSessionDirect,
+  };
+});
+
 installGatewayTestHooks({ scope: "suite" });
 
 let harness: GatewayServerHarness;
@@ -212,6 +235,33 @@ async function getMainPreviewEntry(ws: import("ws").WebSocket) {
   return entry;
 }
 
+async function expectNoMatchingMessage(
+  ws: import("ws").WebSocket,
+  filter: (obj: { type?: unknown; event?: unknown; payload?: unknown }) => boolean,
+  waitMs = 150,
+) {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.off("message", handler);
+      resolve();
+    }, waitMs);
+    const handler = (data: import("ws").RawData) => {
+      const obj = JSON.parse(rawDataToString(data)) as {
+        type?: unknown;
+        event?: unknown;
+        payload?: unknown;
+      };
+      if (!filter(obj)) {
+        return;
+      }
+      clearTimeout(timer);
+      ws.off("message", handler);
+      reject(new Error(`unexpected message: ${JSON.stringify(obj)}`));
+    };
+    ws.on("message", handler);
+  });
+}
+
 describe("gateway server sessions", () => {
   beforeEach(() => {
     sessionCleanupMocks.clearSessionQueues.mockClear();
@@ -231,6 +281,17 @@ describe("gateway server sessions", () => {
     );
     browserSessionTabMocks.closeTrackedBrowserTabsForSessions.mockClear();
     browserSessionTabMocks.closeTrackedBrowserTabsForSessions.mockResolvedValue(0);
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect.mockClear();
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect.mockResolvedValue({
+      ok: true,
+      compacted: true,
+      result: {
+        summary: "Compacted summary",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 120,
+        tokensAfter: 60,
+      },
+    });
   });
 
   test("lists and patches session store via sessions.* RPC", async () => {
@@ -293,6 +354,7 @@ describe("gateway server sessions", () => {
         "sessions.reset",
         "sessions.delete",
         "sessions.compact",
+        "sessions.hygiene",
       ]),
     );
 
@@ -1268,6 +1330,516 @@ describe("gateway server sessions", () => {
     expect(filesAfterDeleteAttempt.some((f) => f.startsWith("sess-active.jsonl.deleted."))).toBe(
       false,
     );
+
+    ws.close();
+  });
+
+  test("sessions.hygiene cleans an existing session transcript in place", async () => {
+    const { dir } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    await fs.writeFile(
+      transcriptPath,
+      `${JSON.stringify({ role: "user", content: "hello" })}\n`,
+      "utf-8",
+    );
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          modelProvider: "openai",
+          model: "gpt-5.2",
+          thinkingLevel: "low",
+          reasoningLevel: "on",
+        },
+      },
+    });
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect.mockImplementationOnce(async (params) => {
+      await fs.writeFile(
+        String((params as { sessionFile?: string }).sessionFile),
+        `${JSON.stringify({ role: "assistant", content: "cleaned transcript" })}\n`,
+        "utf-8",
+      );
+      return {
+        ok: true,
+        compacted: true,
+        result: {
+          summary: "Compacted summary",
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 120,
+          tokensAfter: 60,
+        },
+      };
+    });
+
+    const { ws } = await openClient();
+    const result = await rpcReq<{
+      ok: true;
+      sessionKey: string;
+      summary?: string;
+      continuationSessionKey?: string | null;
+    }>(ws, "sessions.hygiene", {
+      sessionKey: "main",
+      mode: "clean",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payload?.sessionKey).toBe("agent:main:main");
+    expect(result.payload?.summary).toBe("Compacted summary");
+    expect(result.payload?.continuationSessionKey).toBeNull();
+    const compactCall = sessionHygieneMocks.compactEmbeddedPiSessionDirect.mock.calls[0]?.[0] as
+      | {
+          sessionKey?: string;
+          sessionId?: string;
+          sessionFile?: string;
+          provider?: string;
+          model?: string;
+          thinkLevel?: string;
+          reasoningLevel?: string;
+        }
+      | undefined;
+    expect(compactCall).toMatchObject({
+      sessionKey: "agent:main:main",
+      provider: "openai",
+      model: "gpt-5.2",
+      thinkLevel: "low",
+      reasoningLevel: "on",
+    });
+    expect(compactCall?.sessionId).not.toBe("sess-main");
+    expect(compactCall?.sessionFile).toBeDefined();
+    expect(compactCall?.sessionFile).not.toBe(transcriptPath);
+    const cleanedTranscript = await fs.readFile(transcriptPath, "utf-8");
+    expect(cleanedTranscript).toContain("cleaned transcript");
+
+    ws.close();
+  });
+
+  test("sessions.hygiene clean mode emits progress updates and uses a bounded working copy for large transcripts", async () => {
+    const { dir } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    const lines = Array.from({ length: 22_000 }, (_, index) =>
+      JSON.stringify({
+        role: "user",
+        content: `line ${index} ${"x".repeat(80)}`,
+      }),
+    ).join("\n");
+    await fs.writeFile(transcriptPath, `${lines}\n`, "utf-8");
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          modelProvider: "openai",
+          model: "gpt-5.2",
+        },
+      },
+    });
+
+    let workingCopySize = 0;
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect.mockImplementationOnce(async (params) => {
+      const sessionFile = String((params as { sessionFile?: string }).sessionFile);
+      workingCopySize = (await fs.stat(sessionFile)).size;
+      await fs.writeFile(
+        sessionFile,
+        `${JSON.stringify({ role: "assistant", content: "bounded clean result" })}\n`,
+        "utf-8",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        ok: true,
+        compacted: true,
+        result: {
+          summary: "Compacted summary",
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 120,
+          tokensAfter: 60,
+        },
+      };
+    });
+
+    const { ws } = await openClient();
+    const preparingProgress = onceMessage<{
+      type: "event";
+      event: string;
+      payload?: { phase?: string; detail?: string | null };
+    }>(
+      ws,
+      (msg) =>
+        msg.type === "event" &&
+        msg.event === "session.hygiene" &&
+        msg.payload?.phase === "preparing-working-copy",
+    );
+    const compactingProgress = onceMessage<{
+      type: "event";
+      event: string;
+      payload?: { phase?: string; detail?: string | null };
+    }>(
+      ws,
+      (msg) =>
+        msg.type === "event" &&
+        msg.event === "session.hygiene" &&
+        msg.payload?.phase === "compacting",
+    );
+    const completedProgress = onceMessage<{
+      type: "event";
+      event: string;
+      payload?: { phase?: string; detail?: string | null; compacted?: boolean | null };
+    }>(
+      ws,
+      (msg) =>
+        msg.type === "event" &&
+        msg.event === "session.hygiene" &&
+        msg.payload?.phase === "completed",
+    );
+    const resultPromise = rpcReq<{
+      ok: true;
+      compacted: boolean;
+      summary?: string;
+    }>(ws, "sessions.hygiene", {
+      sessionKey: "main",
+      mode: "clean",
+    });
+
+    const [preparing, compacting, completed, result] = await Promise.all([
+      preparingProgress,
+      compactingProgress,
+      completedProgress,
+      resultPromise,
+    ]);
+
+    expect(preparing.payload?.phase).toBe("preparing-working-copy");
+    expect(compacting.payload?.detail).toBe("Using a bounded working copy for faster cleanup.");
+    expect(completed.payload?.compacted).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.payload?.compacted).toBe(true);
+    expect(workingCopySize).toBeGreaterThan(0);
+    expect(workingCopySize).toBeLessThan(900_000);
+    const compactCall = sessionHygieneMocks.compactEmbeddedPiSessionDirect.mock.calls[0]?.[0] as
+      | { sessionFile?: string }
+      | undefined;
+    expect(compactCall?.sessionFile).not.toBe(transcriptPath);
+    const cleanedTranscript = await fs.readFile(transcriptPath, "utf-8");
+    expect(cleanedTranscript).toContain("bounded clean result");
+
+    ws.close();
+  });
+
+  test("sessions.hygiene progress updates target only the requesting connection", async () => {
+    const { dir } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    await fs.writeFile(
+      transcriptPath,
+      `${JSON.stringify({ role: "user", content: "hello" })}\n`,
+      "utf-8",
+    );
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          modelProvider: "openai",
+          model: "gpt-5.2",
+        },
+      },
+    });
+
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect.mockImplementationOnce(async (params) => {
+      const sessionFile = String((params as { sessionFile?: string }).sessionFile);
+      await fs.writeFile(
+        sessionFile,
+        `${JSON.stringify({ role: "assistant", content: "clean result" })}\n`,
+        "utf-8",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return {
+        ok: true,
+        compacted: true,
+        result: {
+          summary: "Compacted summary",
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 120,
+          tokensAfter: 60,
+        },
+      };
+    });
+
+    const { ws: requesterWs } = await openClient();
+    const { ws: observerWs } = await openClient();
+    const requesterProgress = onceMessage<{
+      type: "event";
+      event: string;
+      payload?: { phase?: string };
+    }>(
+      requesterWs,
+      (msg) =>
+        msg.type === "event" &&
+        msg.event === "session.hygiene" &&
+        msg.payload?.phase === "compacting",
+    );
+    const observerNoProgress = expectNoMatchingMessage(
+      observerWs,
+      (msg) =>
+        msg.type === "event" &&
+        msg.event === "session.hygiene" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null,
+    );
+
+    const resultPromise = rpcReq<{ ok: true; compacted: boolean }>(
+      requesterWs,
+      "sessions.hygiene",
+      {
+        sessionKey: "main",
+        mode: "clean",
+      },
+    );
+
+    const [progress, result] = await Promise.all([
+      requesterProgress,
+      resultPromise,
+      observerNoProgress,
+    ]);
+    expect(progress.payload?.phase).toBe("compacting");
+    expect(result.ok).toBe(true);
+    expect(result.payload?.compacted).toBe(true);
+
+    requesterWs.close();
+    observerWs.close();
+  });
+
+  test("sessions.hygiene creates a compacted continuation from a temporary transcript copy", async () => {
+    const { dir, storePath } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    await fs.writeFile(
+      transcriptPath,
+      `${JSON.stringify({ role: "user", content: "hello" })}\n`,
+      "utf-8",
+    );
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          label: "Primary Control Room",
+          modelProvider: "openai",
+          model: "gpt-5.2",
+        },
+      },
+    });
+
+    const { ws } = await openClient();
+    const result = await rpcReq<{
+      ok: true;
+      sessionKey: string;
+      summary?: string;
+      continuationSessionKey?: string | null;
+      continuation?: { sessionKey?: string; message?: string };
+    }>(ws, "sessions.hygiene", {
+      sessionKey: "main",
+      mode: "compacted-continuation",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payload?.sessionKey).toBe("agent:main:main");
+    expect(result.payload?.summary).toBe("Compacted summary");
+    const continuationSessionKey = result.payload?.continuationSessionKey;
+    expect(continuationSessionKey).toMatch(/^agent:main:session-/);
+    expect(result.payload?.continuation?.sessionKey).toBe(continuationSessionKey);
+
+    const compactCall = sessionHygieneMocks.compactEmbeddedPiSessionDirect.mock.calls[0]?.[0] as
+      | { sessionFile?: string; sessionId?: string }
+      | undefined;
+    expect(compactCall?.sessionFile).toBeDefined();
+    expect(compactCall?.sessionFile).not.toBe(transcriptPath);
+    expect(compactCall?.sessionId).not.toBe("sess-main");
+
+    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+      string,
+      { displayName?: string; sessionFile?: string }
+    >;
+    expect(continuationSessionKey).toBeTruthy();
+    if (!continuationSessionKey) {
+      throw new Error("missing continuation session key");
+    }
+    expect(store[continuationSessionKey]).toMatchObject({
+      displayName: "Primary Control Room continuation",
+    });
+    const continuationFile = store[continuationSessionKey]?.sessionFile;
+    expect(continuationFile).toBeTruthy();
+    if (!continuationFile) {
+      throw new Error("missing continuation transcript path");
+    }
+    const continuationTranscript = await fs.readFile(continuationFile, "utf-8");
+    expect(continuationTranscript).toContain("Compacted summary");
+
+    ws.close();
+  });
+
+  test("sessions.hygiene continuation mode emits bounded progress and a seeding stage for large transcripts", async () => {
+    const { dir } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    const lines = Array.from({ length: 22_000 }, (_, index) =>
+      JSON.stringify({
+        role: "user",
+        content: `line ${index} ${"x".repeat(80)}`,
+      }),
+    ).join("\n");
+    await fs.writeFile(transcriptPath, `${lines}\n`, "utf-8");
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          label: "Primary Control Room",
+          modelProvider: "openai",
+          model: "gpt-5.2",
+        },
+      },
+    });
+
+    let workingCopySize = 0;
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect.mockImplementationOnce(async (params) => {
+      const sessionFile = String((params as { sessionFile?: string }).sessionFile);
+      workingCopySize = (await fs.stat(sessionFile)).size;
+      return {
+        ok: true,
+        compacted: true,
+        result: {
+          summary: "Compacted summary",
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 120,
+          tokensAfter: 60,
+        },
+      };
+    });
+
+    const { ws } = await openClient();
+    const compactingProgress = onceMessage<{
+      type: "event";
+      event: string;
+      payload?: {
+        phase?: string;
+        detail?: string | null;
+        step?: number | null;
+        totalSteps?: number | null;
+      };
+    }>(
+      ws,
+      (msg) =>
+        msg.type === "event" &&
+        msg.event === "session.hygiene" &&
+        msg.payload?.phase === "compacting",
+    );
+    const seedingProgress = onceMessage<{
+      type: "event";
+      event: string;
+      payload?: {
+        phase?: string;
+        detail?: string | null;
+        step?: number | null;
+        totalSteps?: number | null;
+      };
+    }>(
+      ws,
+      (msg) =>
+        msg.type === "event" &&
+        msg.event === "session.hygiene" &&
+        msg.payload?.phase === "seeding-continuation",
+    );
+    const resultPromise = rpcReq<{
+      ok: true;
+      compacted: boolean;
+      continuationSessionKey?: string | null;
+    }>(ws, "sessions.hygiene", {
+      sessionKey: "main",
+      mode: "compacted-continuation",
+    });
+
+    const [compacting, seeding, result] = await Promise.all([
+      compactingProgress,
+      seedingProgress,
+      resultPromise,
+    ]);
+
+    expect(compacting.payload?.detail).toBe(
+      "Using a bounded working copy so continuation compaction stays focused on the recent transcript tail.",
+    );
+    expect(compacting.payload?.step).toBe(4);
+    expect(compacting.payload?.totalSteps).toBe(6);
+    expect(seeding.payload?.step).toBe(6);
+    expect(seeding.payload?.totalSteps).toBe(6);
+    expect(seeding.payload?.detail).toContain("bounded working copy");
+    expect(result.ok).toBe(true);
+    expect(result.payload?.compacted).toBe(true);
+    expect(result.payload?.continuationSessionKey).toMatch(/^agent:main:session-/);
+    expect(workingCopySize).toBeGreaterThan(0);
+    expect(workingCopySize).toBeLessThan(900_000);
+
+    ws.close();
+  });
+
+  test("sessions.hygiene returns a no-op response when compacted continuation is not needed", async () => {
+    const { dir, storePath } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    await fs.writeFile(
+      transcriptPath,
+      `${JSON.stringify({ role: "user", content: "hello" })}\n`,
+      "utf-8",
+    );
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          label: "Primary Control Room",
+          modelProvider: "openai",
+          model: "gpt-5.2",
+        },
+      },
+    });
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect.mockResolvedValueOnce({
+      ok: true,
+      compacted: false,
+      result: {
+        summary: "",
+        firstKeptEntryId: "",
+        tokensBefore: 120,
+        tokensAfter: 120,
+      },
+    });
+
+    const { ws } = await openClient();
+    const result = await rpcReq<{
+      ok: true;
+      compacted: boolean;
+      sessionKey: string;
+      summary?: string;
+      detail?: string | null;
+      continuationSessionKey?: string | null;
+      continuation?: { sessionKey?: string; message?: string };
+    }>(ws, "sessions.hygiene", {
+      sessionKey: "main",
+      mode: "compacted-continuation",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payload?.sessionKey).toBe("agent:main:main");
+    expect(result.payload?.compacted).toBe(false);
+    expect(result.payload?.summary).toContain("No compaction needed:");
+    expect(result.payload?.summary).toContain("120 estimated history tokens");
+    expect(result.payload?.summary).toContain("compaction budget");
+    expect(result.payload?.detail).toContain("120 <=");
+    expect(result.payload?.continuationSessionKey).toBeNull();
+    expect(result.payload?.continuation).toBeUndefined();
+
+    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
+    expect(Object.keys(store)).toEqual(["agent:main:main"]);
 
     ws.close();
   });

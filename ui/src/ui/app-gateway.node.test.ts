@@ -106,6 +106,11 @@ function createHost() {
     assistantAgentId: null,
     serverVersion: null,
     sessionKey: "main",
+    sessionHygieneBusy: false,
+    sessionHygieneMode: "clean",
+    sessionHygieneError: null,
+    sessionHygieneProgress: null,
+    sessionHygieneResult: null,
     chatRunId: null,
     refreshSessionsAfterChat: new Set<string>(),
     execApprovalQueue: [],
@@ -187,6 +192,54 @@ describe("connectGateway", () => {
       currentVersion: "1.0.0",
       latestVersion: "2.0.0",
       channel: "latest",
+    });
+  });
+
+  it("applies session hygiene progress only from the active client", () => {
+    const host = createHost();
+
+    connectGateway(host);
+    const firstClient = gatewayClientInstances[0];
+    expect(firstClient).toBeDefined();
+
+    connectGateway(host);
+    const secondClient = gatewayClientInstances[1];
+    expect(secondClient).toBeDefined();
+
+    firstClient.emitEvent({
+      event: "session.hygiene",
+      payload: {
+        sessionKey: "main",
+        mode: "clean",
+        phase: "compacting",
+        status: "running",
+        summary: "Compacting recent session history…",
+        step: 3,
+        totalSteps: 5,
+      },
+    });
+    expect(host.sessionHygieneProgress).toBeNull();
+
+    secondClient.emitEvent({
+      event: "session.hygiene",
+      payload: {
+        sessionKey: "main",
+        mode: "clean",
+        phase: "compacting",
+        status: "running",
+        summary: "Compacting recent session history…",
+        detail: "Using a bounded working copy for faster cleanup.",
+        step: 3,
+        totalSteps: 5,
+      },
+    });
+    expect(host.sessionHygieneProgress).toMatchObject({
+      phase: "compacting",
+      status: "running",
+      summary: "Compacting recent session history…",
+      detail: "Using a bounded working copy for faster cleanup.",
+      step: 3,
+      totalSteps: 5,
     });
   });
 

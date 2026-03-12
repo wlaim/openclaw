@@ -57,6 +57,11 @@ import type { CronFieldErrors } from "./controllers/cron.ts";
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
+import type {
+  SessionHygieneMode,
+  SessionHygieneProgress,
+  SessionHygieneResult,
+} from "./controllers/session-hygiene.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import { titleForTab, type Tab } from "./navigation.ts";
@@ -156,6 +161,11 @@ export class OpenClawApp extends LitElement {
   @state() chatQueue: ChatQueueItem[] = [];
   @state() chatAttachments: ChatAttachment[] = [];
   @state() chatManualRefreshInFlight = false;
+  @state() sessionHygieneBusy = false;
+  @state() sessionHygieneMode: SessionHygieneMode = "clean";
+  @state() sessionHygieneError: string | null = null;
+  @state() sessionHygieneProgress: SessionHygieneProgress | null = null;
+  @state() sessionHygieneResult: SessionHygieneResult | null = null;
   // Sidebar state for tool output viewing
   @state() sidebarOpen = false;
   @state() sidebarContent: string | null = null;

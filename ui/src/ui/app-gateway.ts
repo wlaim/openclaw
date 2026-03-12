@@ -28,6 +28,10 @@ import {
 } from "./controllers/exec-approval.ts";
 import { loadChatModelSuggestions } from "./controllers/models.ts";
 import { loadNodes } from "./controllers/nodes.ts";
+import {
+  applySessionHygieneProgressEvent,
+  SESSION_HYGIENE_EVENT,
+} from "./controllers/session-hygiene.ts";
 import { loadSessions } from "./controllers/sessions.ts";
 import {
   resolveGatewayErrorDetailCode,
@@ -366,6 +370,11 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
       host.presenceError = null;
       host.presenceStatus = null;
     }
+    return;
+  }
+
+  if (evt.event === SESSION_HYGIENE_EVENT) {
+    applySessionHygieneProgressEvent(host as unknown as OpenClawApp, evt.payload);
     return;
   }
 

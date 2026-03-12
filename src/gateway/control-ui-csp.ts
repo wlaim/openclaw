@@ -8,10 +8,10 @@ export function buildControlUiCspHeader(): string {
     "base-uri 'none'",
     "object-src 'none'",
     "frame-ancestors 'none'",
-    "script-src 'self'",
+    "script-src 'self' https://static.cloudflareinsights.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "img-src 'self' data: https:",
     "font-src 'self' https://fonts.gstatic.com",
-    "connect-src 'self' ws: wss:",
+    "connect-src 'self' ws: wss: https://cloudflareinsights.com https://*.cloudflareinsights.com",
   ].join("; ");
 }

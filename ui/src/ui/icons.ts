@@ -106,10 +106,21 @@ export const icons = {
   check: html`
     <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></svg>
   `,
+  plus: html`
+    <svg viewBox="0 0 24 24">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  `,
   arrowDown: html`
     <svg viewBox="0 0 24 24">
       <path d="M12 5v14" />
       <path d="m19 12-7 7-7-7" />
+    </svg>
+  `,
+  chevronDown: html`
+    <svg viewBox="0 0 24 24">
+      <path d="m6 9 6 6 6-6" />
     </svg>
   `,
   copy: html`
@@ -140,6 +151,13 @@ export const icons = {
   book: html`
     <svg viewBox="0 0 24 24">
       <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
+    </svg>
+  `,
+  sparkles: html`
+    <svg viewBox="0 0 24 24">
+      <path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3z" />
+      <path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z" />
+      <path d="M5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14z" />
     </svg>
   `,
   loader: html`

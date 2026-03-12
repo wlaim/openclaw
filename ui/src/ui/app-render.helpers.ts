@@ -1,9 +1,16 @@
 import { html } from "lit";
+import { parseAgentSessionKey } from "../../../src/sessions/session-key-utils.js";
 import { t } from "../i18n/index.ts";
 import { refreshChat } from "./app-chat.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import { OpenClawApp } from "./app.ts";
-import { patchSession } from "./controllers/sessions.ts";
+import {
+  getSessionHygieneOption,
+  runSessionHygiene,
+  SESSION_HYGIENE_OPTIONS,
+  supportsSessionHygiene,
+} from "./controllers/session-hygiene.ts";
+import { createSession, loadSessions, patchSession } from "./controllers/sessions.ts";
 import { icons } from "./icons.ts";
 import { iconForTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
 import type { ThemeTransitionContext } from "./theme-transition.ts";
@@ -11,6 +18,7 @@ import type { ThemeMode } from "./theme.ts";
 import type { SessionsListResult } from "./types.ts";
 
 type SessionDefaultsSnapshot = {
+  defaultAgentId?: string;
   mainSessionKey?: string;
   mainKey?: string;
 };
@@ -30,19 +38,53 @@ function resolveSidebarChatSessionKey(state: AppViewState): string {
   return "main";
 }
 
-function resetChatStateForSessionSwitch(state: AppViewState, sessionKey: string) {
+export function switchChatSession(
+  state: AppViewState,
+  sessionKey: string,
+  opts?: {
+    sessionHygieneResult?: AppViewState["sessionHygieneResult"];
+    sessionHygieneError?: string | null;
+  },
+) {
+  const app = state as unknown as OpenClawApp;
   state.sessionKey = sessionKey;
   state.chatMessage = "";
+  app.chatAttachments = [];
+  app.chatQueue = [];
   state.chatStream = null;
-  (state as unknown as OpenClawApp).chatStreamStartedAt = null;
+  app.chatStreamStartedAt = null;
   state.chatRunId = null;
-  (state as unknown as OpenClawApp).resetToolStream();
-  (state as unknown as OpenClawApp).resetChatScroll();
+  app.sessionHygieneError = opts?.sessionHygieneError ?? null;
+  app.sessionHygieneProgress = null;
+  app.sessionHygieneResult = opts?.sessionHygieneResult ?? null;
+  app.resetToolStream();
+  app.resetChatScroll();
   state.applySettings({
     ...state.settings,
     sessionKey,
     lastActiveSessionKey: sessionKey,
   });
+}
+
+export async function addIndependentChatSession(state: AppViewState): Promise<string | null> {
+  const snapshot = state.hello?.snapshot as
+    | { sessionDefaults?: SessionDefaultsSnapshot }
+    | undefined;
+  const parsed = parseAgentSessionKey(state.sessionKey);
+  const created = await createSession(state, {
+    agentId: parsed?.agentId ?? snapshot?.sessionDefaults?.defaultAgentId ?? "main",
+    basedOn: state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey) ?? null,
+  });
+  if (!created) {
+    return null;
+  }
+
+  switchChatSession(state, created.key);
+  void state.loadAssistantIdentity();
+  void refreshChat(state as unknown as Parameters<typeof refreshChat>[0], {
+    scheduleScroll: false,
+  });
+  return created.key;
 }
 
 export function renderTab(state: AppViewState, tab: Tab) {
@@ -66,7 +108,7 @@ export function renderTab(state: AppViewState, tab: Tab) {
         if (tab === "chat") {
           const mainSessionKey = resolveSidebarChatSessionKey(state);
           if (state.sessionKey !== mainSessionKey) {
-            resetChatStateForSessionSwitch(state, mainSessionKey);
+            switchChatSession(state, mainSessionKey);
             void state.loadAssistantIdentity();
           }
         }
@@ -120,6 +162,70 @@ function renderCronFilterIcon(hiddenCount: number) {
   `;
 }
 
+function renderSessionHygieneStatus(state: AppViewState, supported: boolean) {
+  const option = getSessionHygieneOption(state.sessionHygieneMode);
+  if (!supported) {
+    return html`
+      <div class="chat-hygiene__status chat-hygiene__status--muted">
+        This gateway has not advertised session hygiene support yet.
+      </div>
+    `;
+  }
+  if (state.sessionHygieneBusy && state.sessionHygieneProgress) {
+    const progress = state.sessionHygieneProgress;
+    const stepLabel =
+      progress.step && progress.totalSteps
+        ? `Step ${Math.min(progress.step, progress.totalSteps)} of ${progress.totalSteps}`
+        : "Working";
+    return html`
+      <div class="chat-hygiene__status chat-hygiene__status--progress">
+        <div class="chat-hygiene__status-head">
+          <span>${progress.summary}</span>
+          <span class="chat-hygiene__status-step">${stepLabel}</span>
+        </div>
+        ${progress.detail ? html`<div class="chat-hygiene__status-detail">${progress.detail}</div>` : ""}
+      </div>
+    `;
+  }
+  if (state.sessionHygieneError) {
+    return html`
+      <div class="chat-hygiene__status chat-hygiene__status--error">
+        ${state.sessionHygieneError}
+      </div>
+    `;
+  }
+  if (!state.sessionHygieneResult) {
+    return html`
+      <div class="chat-hygiene__status chat-hygiene__status--muted">
+        ${
+          option.createsContinuation
+            ? "Creates a compacted continuation and opens it in chat when the gateway returns the next session key."
+            : "Runs cleanup against the current session in place and refreshes the transcript when it completes."
+        }
+      </div>
+    `;
+  }
+
+  const result = state.sessionHygieneResult;
+  const continuationDetail =
+    result.continuationSessionKey && option.createsContinuation
+      ? state.sessionKey === result.continuationSessionKey
+        ? `Continuation open: ${result.continuationSessionKey}`
+        : `Continuation ready: ${result.continuationSessionKey}`
+      : null;
+  return html`
+    <div class="chat-hygiene__status chat-hygiene__status--success">
+      <div>${result.summary}</div>
+      ${result.detail ? html`<div class="chat-hygiene__status-detail">${result.detail}</div>` : ""}
+      ${
+        continuationDetail
+          ? html`<div class="chat-hygiene__status-detail">${continuationDetail}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 export function renderChatControls(state: AppViewState) {
   const hideCron = state.sessionsHideCron ?? true;
   const hiddenCronCount = hideCron
@@ -131,6 +237,29 @@ export function renderChatControls(state: AppViewState) {
   const focusActive = state.onboarding ? true : state.settings.chatFocusMode;
   const activeSession = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
   const renameTitle = resolveSessionDisplayName(state.sessionKey, activeSession);
+  const sessionLabel = resolveSessionOptionLabel(state.sessionKey, activeSession);
+  const activeModel = activeSession?.model?.trim() || "";
+  const modelOptions = Array.from(
+    new Set(
+      [activeModel, ...(state.chatModelSuggestions ?? []).map((value) => value.trim())].filter(
+        Boolean,
+      ),
+    ),
+  ).slice(0, 8);
+  const sessionPickerTitle = `Select session${sessionLabel ? `: ${sessionLabel}` : ""}`;
+  const modelPickerTitle =
+    modelOptions.length > 0
+      ? `Select model${activeModel ? `: ${activeModel}` : ""}`
+      : "No model overrides available";
+  const renameButtonTitle = `Rename session${renameTitle ? `: ${renameTitle}` : ""}`;
+  const sessionOptions = resolveSessionOptions(
+    state.sessionKey,
+    state.sessionsResult,
+    resolveMainSessionKey(state.hello, state.sessionsResult),
+    state.sessionsHideCron ?? true,
+  );
+  const sessionHygieneSupported = supportsSessionHygiene(state.hello);
+  const sessionHygieneOption = getSessionHygieneOption(state.sessionHygieneMode);
   // Refresh icon
   const refreshIcon = html`
     <svg
@@ -166,109 +295,285 @@ export function renderChatControls(state: AppViewState) {
     </svg>
   `;
   return html`
-    <div class="chat-controls">
-      <button
-        class="btn btn--sm chat-controls__rename"
-        ?disabled=${!state.connected}
-        @click=${async () => {
-          const value = window.prompt("Rename this session", renameTitle);
-          if (value == null) {
-            return;
-          }
-          const nextLabel = value.trim();
-          const currentLabel = activeSession?.label?.trim() || "";
-          if (nextLabel === currentLabel) {
-            return;
-          }
-          await patchSession(
-            state as unknown as Parameters<typeof patchSession>[0],
-            state.sessionKey,
-            {
-              label: nextLabel || null,
-            },
-          );
-        }}
-        title="Rename session"
-      >
-        ${icons.edit}
-        <span>Rename</span>
-      </button>
-      <button
-        class="btn btn--sm btn--icon"
-        ?disabled=${state.chatLoading || !state.connected}
-        @click=${async () => {
-          const app = state as unknown as OpenClawApp;
-          app.chatManualRefreshInFlight = true;
-          app.chatNewMessagesBelow = false;
-          await app.updateComplete;
-          app.resetToolStream();
-          try {
-            await refreshChat(state as unknown as Parameters<typeof refreshChat>[0], {
-              scheduleScroll: false,
+    <div class="chat-controls" role="toolbar" aria-label="Chat actions">
+      <div class="chat-controls__group chat-controls__group--selectors">
+        <label
+          class="btn btn--sm btn--icon chat-controls__icon-control chat-controls__picker-select"
+          title=${sessionPickerTitle}
+        >
+          <select
+            class="chat-controls__native-select"
+            aria-label=${sessionPickerTitle}
+            .value=${state.sessionKey}
+            ?disabled=${!state.connected}
+            @change=${(e: Event) => {
+              const target = e.target as HTMLSelectElement;
+              switchChatSession(state, target.value);
+              void state.loadAssistantIdentity();
+              void refreshChat(state as unknown as Parameters<typeof refreshChat>[0], {
+                scheduleScroll: false,
+              });
+            }}
+          >
+            ${sessionOptions.map(
+              (entry) => html`
+                <option value=${entry.key} title=${entry.key}>
+                  ${resolveSessionOptionLabel(entry.key, entry.row, { isMain: entry.isMain })}
+                </option>
+              `,
+            )}
+          </select>
+          <span class="chat-controls__picker-content" aria-hidden="true">
+            <span class="chat-controls__control-icon">${icons.messageSquare}</span>
+          </span>
+        </label>
+        <label
+          class="btn btn--sm btn--icon chat-controls__icon-control chat-controls__picker-select"
+          title=${modelPickerTitle}
+        >
+          <select
+            class="chat-controls__native-select"
+            aria-label=${modelPickerTitle}
+            .value=${activeModel}
+            ?disabled=${!state.connected || modelOptions.length === 0}
+            @change=${(e: Event) => {
+              const target = e.target as HTMLSelectElement;
+              const model = target.value.trim();
+              if (!model || model === activeModel) {
+                return;
+              }
+              void patchSession(state, state.sessionKey, { model });
+            }}
+          >
+            ${
+              modelOptions.length > 0
+                ? modelOptions.map(
+                    (model) => html`
+                    <option value=${model} title=${model}>
+                      ${model}
+                    </option>
+                  `,
+                  )
+                : html`
+                    <option value="">No model overrides available</option>
+                  `
+            }
+          </select>
+          <span class="chat-controls__picker-content" aria-hidden="true">
+            <span class="chat-controls__control-icon">${icons.brain}</span>
+          </span>
+        </label>
+      </div>
+      <div class="chat-controls__group chat-controls__group--actions">
+        <button
+          class="btn btn--sm btn--icon chat-controls__icon-control"
+          ?disabled=${state.sessionsLoading || !state.connected}
+          @click=${() => void addIndependentChatSession(state)}
+          title="New thread"
+          aria-label="New thread"
+        >
+          ${icons.plus}
+        </button>
+        <button
+          class="btn btn--sm btn--icon chat-controls__icon-control"
+          ?disabled=${!state.connected}
+          @click=${async () => {
+            const value = window.prompt("Rename this session", renameTitle);
+            if (value == null) {
+              return;
+            }
+            const nextLabel = value.trim();
+            const currentLabel = activeSession?.label?.trim() || "";
+            if (nextLabel === currentLabel) {
+              return;
+            }
+            await patchSession(
+              state as unknown as Parameters<typeof patchSession>[0],
+              state.sessionKey,
+              {
+                label: nextLabel || null,
+              },
+            );
+          }}
+          title=${renameButtonTitle}
+          aria-label=${renameButtonTitle}
+        >
+          ${icons.edit}
+        </button>
+        <details class="chat-controls__menu">
+          <summary
+            class="btn btn--sm btn--icon chat-controls__icon-control"
+            title="Session hygiene"
+            aria-label="Session hygiene"
+          >
+            ${icons.sparkles}
+          </summary>
+          <div class="chat-controls__menu-panel chat-controls__menu-panel--hygiene">
+            <div class="chat-hygiene">
+              <div class="chat-hygiene__header">
+                <div class="chat-hygiene__title">Session hygiene</div>
+                <div class="chat-hygiene__copy">
+                  Prepare this session for either an in-place cleanup or a compacted handoff.
+                </div>
+              </div>
+              <div class="chat-hygiene__meta" aria-live="polite">
+                <div class="chat-hygiene__meta-row">
+                  <span class="chat-hygiene__meta-label">Session</span>
+                  <span class="chat-hygiene__meta-value">${sessionLabel}</span>
+                </div>
+                <div class="chat-hygiene__meta-row">
+                  <span class="chat-hygiene__meta-label">Request</span>
+                  <span class="chat-hygiene__meta-value">
+                    ${
+                      sessionHygieneOption.createsContinuation
+                        ? "create continuation"
+                        : "clean in place"
+                    }
+                  </span>
+                </div>
+              </div>
+              <div class="chat-hygiene__modes" role="listbox" aria-label="Session hygiene mode">
+                ${SESSION_HYGIENE_OPTIONS.map(
+                  (option) => html`
+                    <button
+                      class="chat-hygiene__mode ${state.sessionHygieneMode === option.mode ? "active" : ""}"
+                      type="button"
+                      role="option"
+                      aria-selected=${state.sessionHygieneMode === option.mode}
+                      ?disabled=${state.sessionHygieneBusy}
+                      @click=${() => {
+                        state.sessionHygieneMode = option.mode;
+                        state.sessionHygieneError = null;
+                        state.sessionHygieneProgress = null;
+                        state.sessionHygieneResult = null;
+                      }}
+                    >
+                      <span class="chat-hygiene__mode-title">${option.title}</span>
+                      <span class="chat-hygiene__mode-copy">${option.description}</span>
+                    </button>
+                  `,
+                )}
+              </div>
+              <button
+                class="btn btn--sm primary chat-hygiene__run"
+                type="button"
+                ?disabled=${!state.connected || !sessionHygieneSupported || state.sessionHygieneBusy}
+                @click=${async () => {
+                  const result = await runSessionHygiene(state, state.sessionHygieneMode);
+                  if (!result) {
+                    return;
+                  }
+                  await loadSessions(state);
+                  if (
+                    result.continuationSessionKey &&
+                    result.continuationSessionKey !== state.sessionKey
+                  ) {
+                    switchChatSession(state, result.continuationSessionKey, {
+                      sessionHygieneResult: result,
+                    });
+                    void state.loadAssistantIdentity();
+                  }
+                  await refreshChat(state as unknown as Parameters<typeof refreshChat>[0], {
+                    scheduleScroll: false,
+                  });
+                }}
+              >
+                ${
+                  state.sessionHygieneBusy
+                    ? sessionHygieneOption.busyLabel
+                    : sessionHygieneOption.actionLabel
+                }
+              </button>
+              ${renderSessionHygieneStatus(state, sessionHygieneSupported)}
+            </div>
+          </div>
+        </details>
+        <button
+          class="btn btn--sm btn--icon chat-controls__icon-control"
+          ?disabled=${state.chatLoading || !state.connected}
+          @click=${async () => {
+            const app = state as unknown as OpenClawApp;
+            app.chatManualRefreshInFlight = true;
+            app.chatNewMessagesBelow = false;
+            await app.updateComplete;
+            app.resetToolStream();
+            try {
+              await refreshChat(state as unknown as Parameters<typeof refreshChat>[0], {
+                scheduleScroll: false,
+              });
+              app.scrollToBottom({ smooth: true });
+            } finally {
+              requestAnimationFrame(() => {
+                app.chatManualRefreshInFlight = false;
+                app.chatNewMessagesBelow = false;
+              });
+            }
+          }}
+          title=${t("chat.refreshTitle")}
+          aria-label=${t("chat.refreshTitle")}
+        >
+          ${refreshIcon}
+        </button>
+        <button
+          class="btn btn--sm btn--icon chat-controls__icon-control ${showThinking ? "active" : ""}"
+          ?disabled=${disableThinkingToggle}
+          @click=${() => {
+            if (disableThinkingToggle) {
+              return;
+            }
+            state.applySettings({
+              ...state.settings,
+              chatShowThinking: !state.settings.chatShowThinking,
             });
-            app.scrollToBottom({ smooth: true });
-          } finally {
-            requestAnimationFrame(() => {
-              app.chatManualRefreshInFlight = false;
-              app.chatNewMessagesBelow = false;
+          }}
+          aria-pressed=${showThinking}
+          title=${disableThinkingToggle ? t("chat.onboardingDisabled") : t("chat.thinkingToggle")}
+          aria-label=${disableThinkingToggle ? t("chat.onboardingDisabled") : t("chat.thinkingToggle")}
+        >
+          ${icons.brain}
+        </button>
+        <button
+          class="btn btn--sm btn--icon chat-controls__icon-control ${focusActive ? "active" : ""}"
+          ?disabled=${disableFocusToggle}
+          @click=${() => {
+            if (disableFocusToggle) {
+              return;
+            }
+            state.applySettings({
+              ...state.settings,
+              chatFocusMode: !state.settings.chatFocusMode,
             });
+          }}
+          aria-pressed=${focusActive}
+          title=${disableFocusToggle ? t("chat.onboardingDisabled") : t("chat.focusToggle")}
+          aria-label=${disableFocusToggle ? t("chat.onboardingDisabled") : t("chat.focusToggle")}
+        >
+          ${focusIcon}
+        </button>
+        <button
+          class="btn btn--sm btn--icon chat-controls__icon-control ${hideCron ? "active" : ""}"
+          @click=${() => {
+            state.sessionsHideCron = !hideCron;
+          }}
+          aria-pressed=${hideCron}
+          title=${
+            hideCron
+              ? hiddenCronCount > 0
+                ? t("chat.showCronSessionsHidden", { count: String(hiddenCronCount) })
+                : t("chat.showCronSessions")
+              : t("chat.hideCronSessions")
           }
-        }}
-        title=${t("chat.refreshTitle")}
-      >
-        ${refreshIcon}
-      </button>
-      <span class="chat-controls__separator">|</span>
-      <button
-        class="btn btn--sm btn--icon ${showThinking ? "active" : ""}"
-        ?disabled=${disableThinkingToggle}
-        @click=${() => {
-          if (disableThinkingToggle) {
-            return;
+          aria-label=${
+            hideCron
+              ? hiddenCronCount > 0
+                ? t("chat.showCronSessionsHidden", { count: String(hiddenCronCount) })
+                : t("chat.showCronSessions")
+              : t("chat.hideCronSessions")
           }
-          state.applySettings({
-            ...state.settings,
-            chatShowThinking: !state.settings.chatShowThinking,
-          });
-        }}
-        aria-pressed=${showThinking}
-        title=${disableThinkingToggle ? t("chat.onboardingDisabled") : t("chat.thinkingToggle")}
-      >
-        ${icons.brain}
-      </button>
-      <button
-        class="btn btn--sm btn--icon ${focusActive ? "active" : ""}"
-        ?disabled=${disableFocusToggle}
-        @click=${() => {
-          if (disableFocusToggle) {
-            return;
-          }
-          state.applySettings({
-            ...state.settings,
-            chatFocusMode: !state.settings.chatFocusMode,
-          });
-        }}
-        aria-pressed=${focusActive}
-        title=${disableFocusToggle ? t("chat.onboardingDisabled") : t("chat.focusToggle")}
-      >
-        ${focusIcon}
-      </button>
-      <button
-        class="btn btn--sm btn--icon ${hideCron ? "active" : ""}"
-        @click=${() => {
-          state.sessionsHideCron = !hideCron;
-        }}
-        aria-pressed=${hideCron}
-        title=${
-          hideCron
-            ? hiddenCronCount > 0
-              ? t("chat.showCronSessionsHidden", { count: String(hiddenCronCount) })
-              : t("chat.showCronSessions")
-            : t("chat.hideCronSessions")
-        }
-      >
-        ${renderCronFilterIcon(hiddenCronCount)}
-      </button>
+        >
+          ${renderCronFilterIcon(hiddenCronCount)}
+        </button>
+      </div>
     </div>
   `;
 }

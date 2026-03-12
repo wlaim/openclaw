@@ -1,15 +1,17 @@
 import { html, nothing } from "lit";
-import { parseAgentSessionKey } from "../../../src/routing/session-key.js";
+import { parseAgentSessionKey } from "../../../src/sessions/session-key-utils.js";
 import { t } from "../i18n/index.ts";
 import { refreshChatAvatar } from "./app-chat.ts";
 import { renderUsageTab } from "./app-render-usage-tab.ts";
 import {
+  addIndependentChatSession,
   renderChatControls,
   renderTab,
   renderThemeToggle,
   resolveMainSessionKey,
   resolveSessionOptionLabel,
   resolveSessionOptions,
+  switchChatSession,
 } from "./app-render.helpers.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import { loadAgentFileContent, loadAgentFiles, saveAgentFile } from "./controllers/agent-files.ts";
@@ -341,8 +343,24 @@ export function renderApp(state: AppViewState) {
         }
         <section class="content-header ${isChat ? "content-header--chat" : ""}">
           <div>
-            ${state.tab === "usage" ? nothing : html`<div class="page-title">${titleForTab(state.tab)}</div>`}
-            ${state.tab === "usage" ? nothing : html`<div class="page-sub">${subtitleForTab(state.tab)}</div>`}
+            ${
+              state.tab === "usage"
+                ? nothing
+                : state.tab === "chat"
+                  ? html`
+                      <div class="page-title">
+                        ${(() => {
+                          const activeSession = state.sessionsResult?.sessions?.find(
+                            (row) => row.key === state.sessionKey,
+                          );
+                          const name = resolveSessionOptionLabel(state.sessionKey, activeSession);
+                          return `${name} · ${state.sessionKey}`;
+                        })()}
+                      </div>
+                    `
+                  : html`<div class="page-title">${titleForTab(state.tab)}</div>`
+            }
+            ${state.tab === "usage" || state.tab === "chat" ? nothing : html`<div class="page-sub">${subtitleForTab(state.tab)}</div>`}
           </div>
           <div class="page-meta">
             ${state.lastError ? html`<div class="pill danger">${state.lastError}</div>` : nothing}
@@ -963,20 +981,7 @@ export function renderApp(state: AppViewState) {
             ? renderChat({
                 sessionKey: state.sessionKey,
                 onSessionKeyChange: (next) => {
-                  state.sessionKey = next;
-                  state.chatMessage = "";
-                  state.chatAttachments = [];
-                  state.chatStream = null;
-                  state.chatStreamStartedAt = null;
-                  state.chatRunId = null;
-                  state.chatQueue = [];
-                  state.resetToolStream();
-                  state.resetChatScroll();
-                  state.applySettings({
-                    ...state.settings,
-                    sessionKey: next,
-                    lastActiveSessionKey: next,
-                  });
+                  switchChatSession(state, next);
                   void state.loadAssistantIdentity();
                   void loadChatHistory(state);
                   void refreshChatAvatar(state);
@@ -1040,7 +1045,7 @@ export function renderApp(state: AppViewState) {
                 canAbort: Boolean(state.chatRunId),
                 onAbort: () => void state.handleAbortChat(),
                 onQueueRemove: (id) => state.removeQueuedMessage(id),
-                onNewSession: () => state.handleSendChat("/new", { restoreDraft: true }),
+                onAddSession: () => void addIndependentChatSession(state),
                 showNewMessages: state.chatNewMessagesBelow && !state.chatManualRefreshInFlight,
                 onScrollToBottom: () => state.scrollToBottom(),
                 // Sidebar props for tool output viewing
