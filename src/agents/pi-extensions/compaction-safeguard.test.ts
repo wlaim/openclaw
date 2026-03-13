@@ -1545,6 +1545,102 @@ describe("compaction-safeguard double-compaction guard", () => {
     expect(result).toEqual({ cancel: true });
     expect(getApiKeyMock).toHaveBeenCalled();
   });
+
+  it("continues when OpenClaw custom transcript messages carry real content", async () => {
+    const sessionManager = stubSessionManager();
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, { model });
+
+    const mockEvent = {
+      preparation: {
+        messagesToSummarize: [
+          {
+            role: "custom",
+            customType: "openclaw-block-reply",
+            content: [{ type: "text", text: "real progress from the current run" }],
+            display: true,
+            timestamp: 1,
+          } as unknown as AgentMessage,
+        ],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1500,
+        fileOps: { read: [], edited: [], written: [] },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+    const { result, getApiKeyMock } = await runCompactionScenario({
+      sessionManager,
+      event: mockEvent,
+      apiKey: null,
+    });
+
+    expect(result).toEqual({ cancel: true });
+    expect(getApiKeyMock).toHaveBeenCalledWith(model);
+  });
+
+  it.each([
+    {
+      label: "assistant reasoning blocks",
+      message: {
+        role: "assistant",
+        content: [{ type: "reasoning", reasoning: "planning the next steps" }],
+        timestamp: 1,
+      },
+    },
+    {
+      label: "tool results with structured output",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "exec",
+        content: [{ type: "output_text", output: "npm test failed in session history" }],
+        timestamp: 1,
+      },
+    },
+    {
+      label: "tool messages with toolOutput",
+      message: {
+        role: "tool",
+        content: [{ type: "result", toolOutput: "git status showed pending edits" }],
+        timestamp: 1,
+      },
+    },
+    {
+      label: "bash execution records with command/output",
+      message: {
+        role: "bashExecution",
+        command: "git status --short",
+        output: "M src/agents/pi-embedded-runner/compact.ts",
+        timestamp: 1,
+      },
+    },
+  ])("continues when transcript includes $label", async ({ message }) => {
+    const sessionManager = stubSessionManager();
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, { model });
+
+    const mockEvent = {
+      preparation: {
+        messagesToSummarize: [message as AgentMessage],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1500,
+        fileOps: { read: [], edited: [], written: [] },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+    const { result, getApiKeyMock } = await runCompactionScenario({
+      sessionManager,
+      event: mockEvent,
+      apiKey: null,
+    });
+
+    expect(result).toEqual({ cancel: true });
+    expect(getApiKeyMock).toHaveBeenCalledWith(model);
+  });
 });
 
 async function expectWorkspaceSummaryEmptyForAgentsAlias(

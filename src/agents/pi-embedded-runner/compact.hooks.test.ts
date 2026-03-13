@@ -401,6 +401,110 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
     });
   });
 
+  it("treats substantive custom messages as eligible compaction history", async () => {
+    const { createAgentSession } = await import("@mariozechner/pi-coding-agent");
+    vi.mocked(createAgentSession).mockImplementationOnce(async () => {
+      const session = {
+        sessionId: "session-1",
+        messages: [
+          {
+            role: "custom",
+            customType: "openclaw-block-reply",
+            content: [{ type: "text", text: "progress update from the active session" }],
+            display: true,
+            timestamp: 1,
+          },
+        ],
+        agent: {
+          replaceMessages: vi.fn((messages: unknown[]) => {
+            session.messages = [...(messages as typeof session.messages)];
+          }),
+          streamFn: vi.fn(),
+        },
+        compact: vi.fn(async () => await sessionCompactImpl()),
+        dispose: vi.fn(),
+      };
+      return { session };
+    });
+
+    const result = await compactEmbeddedPiSessionDirect({
+      sessionId: "session-1",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      customInstructions: "focus on decisions",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(sessionCompactImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: "assistant reasoning records",
+      message: {
+        role: "assistant",
+        content: [{ type: "reasoning", reasoning: "carry forward the active plan" }],
+        timestamp: 1,
+      },
+    },
+    {
+      label: "tool results with structured output",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "exec",
+        content: [{ type: "output_text", output: "build output from the main session" }],
+        isError: false,
+        timestamp: 1,
+      },
+    },
+    {
+      label: "tool records with toolOutput payloads",
+      message: {
+        role: "tool",
+        content: [{ type: "result", toolOutput: "workspace scan completed" }],
+        timestamp: 1,
+      },
+    },
+    {
+      label: "bash execution records",
+      message: {
+        role: "bashExecution",
+        command: "git diff --stat",
+        output: " compact.ts | 24 ++++++++++++++++++++++++",
+        timestamp: 1,
+      },
+    },
+  ])("treats $label as eligible compaction history", async ({ message }) => {
+    const { createAgentSession } = await import("@mariozechner/pi-coding-agent");
+    vi.mocked(createAgentSession).mockImplementationOnce(async () => {
+      const session = {
+        sessionId: "session-1",
+        messages: [message],
+        agent: {
+          replaceMessages: vi.fn((messages: unknown[]) => {
+            session.messages = [...(messages as typeof session.messages)];
+          }),
+          streamFn: vi.fn(),
+        },
+        compact: vi.fn(async () => await sessionCompactImpl()),
+        dispose: vi.fn(),
+      };
+      return { session };
+    });
+
+    const result = await compactEmbeddedPiSessionDirect({
+      sessionId: "session-1",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      customInstructions: "focus on decisions",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+  });
+
   it("registers the Ollama api provider before compaction", async () => {
     resolveModelMock.mockReturnValue({
       model: {

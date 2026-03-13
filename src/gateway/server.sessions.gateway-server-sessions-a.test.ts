@@ -1526,6 +1526,83 @@ describe("gateway server sessions", () => {
     ws.close();
   });
 
+  test("sessions.hygiene clean mode retries a large bounded working copy against the full transcript when the bounded copy looks empty", async () => {
+    const { dir } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    const lines = Array.from({ length: 22_000 }, (_, index) =>
+      JSON.stringify({
+        role: "user",
+        content: `line ${index} ${"x".repeat(80)}`,
+      }),
+    ).join("\n");
+    await fs.writeFile(transcriptPath, `${lines}\n`, "utf-8");
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          modelProvider: "openai",
+          model: "gpt-5.2",
+        },
+      },
+    });
+
+    let firstCallSize = 0;
+    let secondCallSize = 0;
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect
+      .mockImplementationOnce(async (params) => {
+        const sessionFile = String((params as { sessionFile?: string }).sessionFile);
+        firstCallSize = (await fs.stat(sessionFile)).size;
+        return {
+          ok: true,
+          compacted: false,
+          reason: "no real conversation messages",
+        };
+      })
+      .mockImplementationOnce(async (params) => {
+        const sessionFile = String((params as { sessionFile?: string }).sessionFile);
+        secondCallSize = (await fs.stat(sessionFile)).size;
+        await fs.writeFile(
+          sessionFile,
+          `${JSON.stringify({ role: "assistant", content: "cleaned from full fallback" })}\n`,
+          "utf-8",
+        );
+        return {
+          ok: true,
+          compacted: true,
+          result: {
+            summary: "Compacted summary",
+            firstKeptEntryId: "entry-1",
+            tokensBefore: 120,
+            tokensAfter: 60,
+          },
+        };
+      });
+
+    const { ws } = await openClient();
+    const result = await rpcReq<{
+      ok: true;
+      compacted: boolean;
+      summary?: string;
+    }>(ws, "sessions.hygiene", {
+      sessionKey: "main",
+      mode: "clean",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payload?.compacted).toBe(true);
+    expect(result.payload?.summary).toBe("Compacted summary");
+    expect(sessionHygieneMocks.compactEmbeddedPiSessionDirect).toHaveBeenCalledTimes(2);
+    expect(firstCallSize).toBeGreaterThan(0);
+    expect(firstCallSize).toBeLessThan(900_000);
+    expect(secondCallSize).toBeGreaterThan(firstCallSize);
+    const cleanedTranscript = await fs.readFile(transcriptPath, "utf-8");
+    expect(cleanedTranscript).toContain("cleaned from full fallback");
+
+    ws.close();
+  });
+
   test("sessions.hygiene progress updates target only the requesting connection", async () => {
     const { dir } = await createSessionStoreDir();
     const transcriptPath = path.join(dir, "sess-main.jsonl");
@@ -1779,6 +1856,92 @@ describe("gateway server sessions", () => {
     expect(result.payload?.continuationSessionKey).toMatch(/^agent:main:session-/);
     expect(workingCopySize).toBeGreaterThan(0);
     expect(workingCopySize).toBeLessThan(900_000);
+
+    ws.close();
+  });
+
+  test("sessions.hygiene continuation mode retries the full transcript before giving up on a bounded no-op", async () => {
+    const { dir, storePath } = await createSessionStoreDir();
+    const transcriptPath = path.join(dir, "sess-main.jsonl");
+    const lines = Array.from({ length: 22_000 }, (_, index) =>
+      JSON.stringify({
+        role: "user",
+        content: `line ${index} ${"x".repeat(80)}`,
+      }),
+    ).join("\n");
+    await fs.writeFile(transcriptPath, `${lines}\n`, "utf-8");
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          sessionFile: transcriptPath,
+          updatedAt: Date.now(),
+          label: "Primary Control Room",
+          modelProvider: "openai",
+          model: "gpt-5.2",
+        },
+      },
+    });
+
+    let firstCallSize = 0;
+    let secondCallSize = 0;
+    sessionHygieneMocks.compactEmbeddedPiSessionDirect
+      .mockImplementationOnce(async (params) => {
+        const sessionFile = String((params as { sessionFile?: string }).sessionFile);
+        firstCallSize = (await fs.stat(sessionFile)).size;
+        return {
+          ok: true,
+          compacted: false,
+          reason: "no real conversation messages",
+        };
+      })
+      .mockImplementationOnce(async (params) => {
+        const sessionFile = String((params as { sessionFile?: string }).sessionFile);
+        secondCallSize = (await fs.stat(sessionFile)).size;
+        return {
+          ok: true,
+          compacted: true,
+          result: {
+            summary: "Compacted summary",
+            firstKeptEntryId: "entry-1",
+            tokensBefore: 120,
+            tokensAfter: 60,
+          },
+        };
+      });
+
+    const { ws } = await openClient();
+    const result = await rpcReq<{
+      ok: true;
+      compacted: boolean;
+      continuationSessionKey?: string | null;
+    }>(ws, "sessions.hygiene", {
+      sessionKey: "main",
+      mode: "compacted-continuation",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payload?.compacted).toBe(true);
+    expect(result.payload?.continuationSessionKey).toMatch(/^agent:main:session-/);
+    expect(sessionHygieneMocks.compactEmbeddedPiSessionDirect).toHaveBeenCalledTimes(2);
+    expect(firstCallSize).toBeGreaterThan(0);
+    expect(firstCallSize).toBeLessThan(900_000);
+    expect(secondCallSize).toBeGreaterThan(firstCallSize);
+
+    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+      string,
+      { sessionFile?: string }
+    >;
+    const continuationSessionKey = result.payload?.continuationSessionKey;
+    expect(continuationSessionKey).toBeTruthy();
+    if (!continuationSessionKey) {
+      throw new Error("missing continuation session key");
+    }
+    const continuationTranscript = await fs.readFile(
+      String(store[continuationSessionKey]?.sessionFile),
+      "utf-8",
+    );
+    expect(continuationTranscript).toContain("Compacted summary");
 
     ws.close();
   });

@@ -485,6 +485,75 @@ async function runSessionHygieneCompaction(params: {
   });
 }
 
+function isSessionHygieneConversationNoOp(
+  result:
+    | {
+        ok?: boolean;
+        compacted?: boolean;
+        reason?: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!result?.ok || result.compacted) {
+    return false;
+  }
+  return result.reason?.trim().toLowerCase() === "no real conversation messages";
+}
+
+async function runSessionHygieneCompactionWithBoundedFallback(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  sessionKey: string;
+  sessionId: string;
+  sourceTranscriptPath: string;
+  initialSessionFile: string;
+  usedBoundedCopy: boolean;
+  tempDir: string;
+  workspaceDir: string;
+  provider: string;
+  model: string;
+  thinkingLevel?: string;
+  reasoningLevel?: string;
+}) {
+  let compacted = await runSessionHygieneCompaction({
+    cfg: params.cfg,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+    sessionFile: params.initialSessionFile,
+    workspaceDir: params.workspaceDir,
+    provider: params.provider,
+    model: params.model,
+    thinkingLevel: params.thinkingLevel,
+    reasoningLevel: params.reasoningLevel,
+  });
+
+  let sessionFile = params.initialSessionFile;
+  let usedBoundedFallback = false;
+  if (params.usedBoundedCopy && isSessionHygieneConversationNoOp(compacted)) {
+    const fullCopyPath = path.join(params.tempDir, `${params.sessionId}-full.jsonl`);
+    fs.copyFileSync(params.sourceTranscriptPath, fullCopyPath);
+    compacted = await runSessionHygieneCompaction({
+      cfg: params.cfg,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+      sessionFile: fullCopyPath,
+      workspaceDir: params.workspaceDir,
+      provider: params.provider,
+      model: params.model,
+      thinkingLevel: params.thinkingLevel,
+      reasoningLevel: params.reasoningLevel,
+    });
+    sessionFile = fullCopyPath;
+    usedBoundedFallback = true;
+  }
+
+  return {
+    compacted,
+    sessionFile,
+    usedBoundedFallback,
+  };
+}
+
 type SessionHygieneBudgetDetails = {
   tokensBefore: number | null;
   budgetTokens: number | null;
@@ -1269,17 +1338,21 @@ export const sessionsHandlers: GatewayRequestHandlers = {
           step: 4,
           totalSteps: 5,
         });
-        const compacted = await runSessionHygieneCompaction({
+        const compactionRun = await runSessionHygieneCompactionWithBoundedFallback({
           cfg,
           sessionKey: canonicalSessionKey,
           sessionId: compactSessionId,
-          sessionFile: workingCopyPath,
+          sourceTranscriptPath: transcriptPath,
+          initialSessionFile: workingCopyPath,
+          usedBoundedCopy: bounded,
+          tempDir: tmpDir,
           workspaceDir,
           provider: resolvedModel.provider,
           model: resolvedModel.model,
           thinkingLevel: entry.thinkingLevel,
           reasoningLevel: entry.reasoningLevel,
         });
+        const compacted = compactionRun.compacted;
         if (!compacted.ok) {
           progress.fail("Session hygiene failed.", compacted.reason || null);
           respond(
@@ -1289,18 +1362,20 @@ export const sessionsHandlers: GatewayRequestHandlers = {
           );
           return;
         }
-        if (compacted.compacted || !bounded) {
+        if (compacted.compacted || !bounded || compactionRun.usedBoundedFallback) {
           progress.emit({
             phase: "writing-cleaned-session",
             summary: "Writing cleaned session back to the live transcript…",
-            detail: bounded
-              ? "Replacing the current transcript with the compacted working copy."
-              : "Replacing the current transcript with the cleaned working copy.",
+            detail: compactionRun.usedBoundedFallback
+              ? "Replacing the current transcript with a full working copy after retrying the bounded cleanup path."
+              : bounded
+                ? "Replacing the current transcript with the compacted working copy."
+                : "Replacing the current transcript with the cleaned working copy.",
             step: 5,
             totalSteps: 5,
             compacted: compacted.compacted,
           });
-          fs.copyFileSync(workingCopyPath, transcriptPath);
+          fs.copyFileSync(compactionRun.sessionFile, transcriptPath);
         }
         const summary =
           compacted.result?.summary?.trim() ||
@@ -1325,9 +1400,11 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         progress.complete(summary, {
           compacted: compacted.compacted,
           detail: compacted.compacted
-            ? bounded
-              ? "Live session cleanup ran against a bounded working copy."
-              : "Live session cleanup completed from a temporary working copy."
+            ? compactionRun.usedBoundedFallback
+              ? "Live session cleanup retried from a full working copy after the bounded copy looked empty."
+              : bounded
+                ? "Live session cleanup ran against a bounded working copy."
+                : "Live session cleanup completed from a temporary working copy."
             : noOpReason?.detail,
         });
         respond(
@@ -1374,17 +1451,21 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         step: 4,
         totalSteps: 6,
       });
-      const compacted = await runSessionHygieneCompaction({
+      const compactionRun = await runSessionHygieneCompactionWithBoundedFallback({
         cfg,
         sessionKey: canonicalSessionKey,
         sessionId: compactSessionId,
-        sessionFile: compactSessionFile,
+        sourceTranscriptPath: transcriptPath,
+        initialSessionFile: compactSessionFile,
+        usedBoundedCopy: bounded,
+        tempDir: tmpDir,
         workspaceDir,
         provider: resolvedModel.provider,
         model: resolvedModel.model,
         thinkingLevel: entry.thinkingLevel,
         reasoningLevel: entry.reasoningLevel,
       });
+      const compacted = compactionRun.compacted;
       if (!compacted.ok) {
         progress.fail("Session hygiene failed.", compacted.reason || null);
         respond(
@@ -1457,9 +1538,11 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       progress.emit({
         phase: "seeding-continuation",
         summary: "Seeding continuation transcript…",
-        detail: bounded
-          ? "Writing the compacted summary into the new continuation created from the bounded working copy."
-          : "Writing the compacted summary into the new continuation transcript.",
+        detail: compactionRun.usedBoundedFallback
+          ? "Writing the compacted summary into the new continuation after retrying from a full working copy."
+          : bounded
+            ? "Writing the compacted summary into the new continuation created from the bounded working copy."
+            : "Writing the compacted summary into the new continuation transcript.",
         step: 6,
         totalSteps: 6,
         compacted: true,

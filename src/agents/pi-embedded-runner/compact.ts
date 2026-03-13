@@ -144,8 +144,74 @@ type CompactionMessageMetrics = {
   contributors: Array<{ role: string; chars: number; tool?: string }>;
 };
 
+function hasMeaningfulConversationPayload(msg: AgentMessage): boolean {
+  const role = typeof msg.role === "string" ? msg.role : "";
+  if (role === "bashExecution") {
+    const bashMessage = msg as { command?: unknown; output?: unknown };
+    return (
+      (typeof bashMessage.command === "string" && bashMessage.command.trim().length > 0) ||
+      (typeof bashMessage.output === "string" && bashMessage.output.trim().length > 0)
+    );
+  }
+
+  const hasMeaningfulValue = (value: unknown, depth = 0): boolean => {
+    if (depth > 3 || value === null || value === undefined) {
+      return false;
+    }
+    if (typeof value === "string") {
+      return value.trim().length > 0;
+    }
+    if (Array.isArray(value)) {
+      return value.some((item) => hasMeaningfulValue(item, depth + 1));
+    }
+    if (typeof value !== "object") {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    for (const key of [
+      "text",
+      "output",
+      "toolOutput",
+      "command",
+      "summary",
+      "message",
+      "error",
+      "reasoning",
+      "thinking",
+    ] as const) {
+      if (typeof record[key] === "string" && record[key].trim().length > 0) {
+        return true;
+      }
+    }
+
+    const type = typeof record.type === "string" ? record.type : "";
+    if (type === "toolCall" || type === "toolUse" || type === "functionCall" || type === "image") {
+      return true;
+    }
+
+    for (const key of ["content", "data", "args", "arguments", "input", "result"] as const) {
+      if (hasMeaningfulValue(record[key], depth + 1)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const content = (msg as { content?: unknown }).content;
+  return hasMeaningfulValue(content);
+}
+
 function hasRealConversationContent(msg: AgentMessage): boolean {
-  return msg.role === "user" || msg.role === "assistant" || msg.role === "toolResult";
+  return (
+    (msg.role === "user" ||
+      msg.role === "assistant" ||
+      msg.role === "toolResult" ||
+      msg.role === "custom" ||
+      msg.role === "bashExecution") &&
+    hasMeaningfulConversationPayload(msg)
+  );
 }
 
 function createCompactionDiagId(): string {
