@@ -90,6 +90,10 @@ export type ChatProps = {
 const COMPACTION_TOAST_DURATION_MS = 5000;
 const FALLBACK_TOAST_DURATION_MS = 8000;
 
+export function resetChatViewState() {
+  // Chat view rendering is currently driven entirely by app state.
+}
+
 function adjustTextareaHeight(el: HTMLTextAreaElement) {
   el.style.height = "";
 }

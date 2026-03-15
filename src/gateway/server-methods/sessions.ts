@@ -24,10 +24,13 @@ import {
   updateSessionStore,
 } from "../../config/sessions.js";
 import { unbindThreadBindingsBySessionKey } from "../../discord/monitor/thread-bindings.lifecycle.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { isSubagentSessionKey } from "../../subagents/session-key.js";
+import { logVerbose } from "../../globals.js";
+import {
+  isSubagentSessionKey,
+  normalizeAgentId,
+  parseAgentSessionKey,
+} from "../../routing/session-key.js";
 import { getGlobalHookRunner } from "../hooks.js";
-import { logVerbose } from "../logger.js";
 import { GATEWAY_CLIENT_IDS } from "../protocol/client-info.js";
 import {
   ErrorCodes,
