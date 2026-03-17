@@ -775,6 +775,68 @@ describe("chat view", () => {
     vi.unstubAllGlobals();
   });
 
+  it("uses provider-qualified model refs for non-default providers", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+      } satisfies Partial<Response>),
+    );
+    const { state, request } = createChatHeaderState({
+      models: [{ id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", provider: "google-gemini-cli" }],
+    });
+    const container = document.createElement("div");
+    render(renderChatSessionSelect(state), container);
+
+    const modelSelect = container.querySelector<HTMLSelectElement>(
+      'select[data-chat-model-select="true"]',
+    );
+    expect(modelSelect).not.toBeNull();
+
+    modelSelect!.value = "google-gemini-cli/gemini-2.0-flash";
+    modelSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushTasks();
+
+    expect(request).toHaveBeenCalledWith("sessions.patch", {
+      key: "main",
+      model: "google-gemini-cli/gemini-2.0-flash",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes bare picker values to the unique catalog provider", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+      } satisfies Partial<Response>),
+    );
+    const { state, request } = createChatHeaderState({
+      models: [
+        { id: "gpt-5", name: "GPT-5", provider: "openai-codex" },
+        { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "google" },
+      ],
+    });
+    const container = document.createElement("div");
+    render(renderChatSessionSelect(state), container);
+
+    const modelSelect = container.querySelector<HTMLSelectElement>(
+      'select[data-chat-model-select="true"]',
+    );
+    expect(modelSelect).not.toBeNull();
+
+    modelSelect!.append(new Option("Gemini 2.5 Flash", "gemini-2.5-flash"));
+    modelSelect!.value = "gemini-2.5-flash";
+    modelSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushTasks();
+
+    expect(request).toHaveBeenCalledWith("sessions.patch", {
+      key: "main",
+      model: "google/gemini-2.5-flash",
+    });
+    vi.unstubAllGlobals();
+  });
+
   it("normalizes cached bare /model overrides to the matching catalog option", () => {
     const { state } = createChatHeaderState();
     state.chatModelOverrides = { main: { kind: "raw", value: "gpt-5-mini" } };

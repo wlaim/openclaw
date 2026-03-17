@@ -59,6 +59,8 @@ const BASE_METHODS = [
   "sessions.reset",
   "sessions.delete",
   "sessions.compact",
+  "sessions.driftCandidates",
+  "sessions.bindCanonicalMain",
   "last-heartbeat",
   "set-heartbeats",
   "wake",

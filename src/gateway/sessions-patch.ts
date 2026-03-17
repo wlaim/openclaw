@@ -84,6 +84,60 @@ function normalizeSubagentControlScope(raw: string): "children" | "none" | undef
   return undefined;
 }
 
+function splitExplicitModelRef(raw: string): { model: string; provider: string } | null {
+  const trimmed = raw.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0 || slash === trimmed.length - 1) {
+    return null;
+  }
+  return {
+    provider: trimmed.slice(0, slash).trim(),
+    model: trimmed.slice(slash + 1).trim(),
+  };
+}
+
+function resolveUniqueAllowedModelById(params: {
+  cfg: OpenClawConfig;
+  catalog: ModelCatalogEntry[];
+  modelId: string;
+  defaultProvider: string;
+  defaultModel: string;
+}) {
+  const configuredMatches = Object.keys(params.cfg.agents?.defaults?.models ?? {}).filter((raw) => {
+    const trimmed = raw.trim();
+    return trimmed === params.modelId || trimmed.endsWith(`/${params.modelId}`);
+  });
+  if (configuredMatches.length === 1) {
+    const only = configuredMatches[0]?.trim() ?? "";
+    const split = splitExplicitModelRef(only);
+    if (split) {
+      return {
+        ref: { provider: split.provider, model: split.model },
+        key: `${split.provider}/${split.model}`,
+      };
+    }
+  }
+  const matches = params.catalog.filter((entry) => entry.id.trim() === params.modelId);
+  if (matches.length === 0) {
+    return null;
+  }
+  const allowed = matches
+    .map((entry) =>
+      resolveAllowedModelRef({
+        cfg: params.cfg,
+        catalog: params.catalog,
+        raw: `${entry.provider}/${entry.id}`,
+        defaultProvider: params.defaultProvider,
+        defaultModel: params.defaultModel,
+      }),
+    )
+    .filter((result): result is Exclude<typeof result, { error: string }> => !("error" in result));
+  if (allowed.length !== 1) {
+    return null;
+  }
+  return allowed[0];
+}
+
 export async function applySessionsPatchToStore(params: {
   cfg: OpenClawConfig;
   store: Record<string, SessionEntry>;
@@ -396,13 +450,28 @@ export async function applySessionsPatchToStore(params: {
         };
       }
       const catalog = await params.loadGatewayModelCatalog();
-      const resolved = resolveAllowedModelRef({
+      let resolved = resolveAllowedModelRef({
         cfg,
         catalog,
         raw: trimmed,
         defaultProvider: resolvedDefault.provider,
         defaultModel: subagentModelHint ?? resolvedDefault.model,
       });
+      if ("error" in resolved) {
+        const explicitRef = splitExplicitModelRef(trimmed);
+        if (explicitRef) {
+          const recovered = resolveUniqueAllowedModelById({
+            cfg,
+            catalog,
+            modelId: explicitRef.model,
+            defaultProvider: resolvedDefault.provider,
+            defaultModel: subagentModelHint ?? resolvedDefault.model,
+          });
+          if (recovered) {
+            resolved = recovered;
+          }
+        }
+      }
       if ("error" in resolved) {
         return invalid(resolved.error);
       }

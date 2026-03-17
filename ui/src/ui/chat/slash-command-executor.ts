@@ -25,6 +25,20 @@ import type {
   SessionsListResult,
   SessionsPatchResult,
 } from "../types.ts";
+
+export type BindDriftCandidate = {
+  key: string;
+  label: string;
+  updatedAt: number | null;
+  sessionId?: string;
+  derivedTitle?: string;
+  lastMessagePreview?: string;
+  totalTokens?: number | null;
+  contextTokens?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  isCurrentSession?: boolean;
+};
 import { SLASH_COMMANDS } from "./slash-commands.ts";
 
 export type SlashCommandResult = {
@@ -39,10 +53,16 @@ export type SlashCommandResult = {
     | "stop"
     | "clear"
     | "toggle-focus"
-    | "navigate-usage";
+    | "navigate-usage"
+    | "open-bind-recovery";
   /** Optional session-level directive changes that the caller should mirror locally. */
   sessionPatch?: {
     modelOverride?: ChatModelOverride | null;
+  };
+  bindRecovery?: {
+    canonicalMainKey: string;
+    currentSessionId: string | null;
+    candidates: BindDriftCandidate[];
   };
 };
 
@@ -67,6 +87,8 @@ export async function executeSlashCommand(
       return { content: "Toggled focus mode.", action: "toggle-focus" };
     case "compact":
       return await executeCompact(client, sessionKey);
+    case "bind":
+      return await executeBind(client, sessionKey);
     case "model":
       return await executeModel(client, sessionKey, args);
     case "think":
@@ -118,6 +140,35 @@ async function executeCompact(
     return { content: "Context compacted successfully.", action: "refresh" };
   } catch (err) {
     return { content: `Compaction failed: ${String(err)}` };
+  }
+}
+
+async function executeBind(
+  client: GatewayBrowserClient,
+  sessionKey: string,
+): Promise<SlashCommandResult> {
+  try {
+    const result = await client.request<{
+      ok?: boolean;
+      canonicalMainKey: string;
+      currentSessionId: string | null;
+      candidates: BindDriftCandidate[];
+    }>("sessions.driftCandidates", { sessionKey });
+    const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+    return {
+      content:
+        candidates.length > 0
+          ? `Found ${candidates.length} main-like drift candidate${candidates.length === 1 ? "" : "s"}.`
+          : "No main-like drift candidates found.",
+      action: "open-bind-recovery",
+      bindRecovery: {
+        canonicalMainKey: result?.canonicalMainKey ?? DEFAULT_MAIN_KEY,
+        currentSessionId: result?.currentSessionId ?? null,
+        candidates,
+      },
+    };
+  } catch (err) {
+    return { content: `Failed to load bind candidates: ${String(err)}` };
   }
 }
 

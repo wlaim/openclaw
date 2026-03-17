@@ -273,6 +273,31 @@ describe("gateway sessions patch", () => {
     expect(entry.modelOverride).toBe("claude-sonnet-4-6");
   });
 
+  test("recovers from stale provider-prefixed model ids when the model id uniquely matches an allowed provider", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        cfg: {
+          agents: {
+            defaults: {
+              model: { primary: "openai-codex/gpt-5.4" },
+              models: {
+                "openai-codex/gpt-5.4": {},
+                "google-gemini-cli/gemini-2.0-flash": {},
+              },
+            },
+          },
+        } as OpenClawConfig,
+        patch: { key: MAIN_SESSION_KEY, model: "openai-codex/gemini-2.0-flash" },
+        loadGatewayModelCatalog: async () => [
+          { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" },
+          { provider: "google-gemini-cli", id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
+        ],
+      }),
+    );
+    expect(entry.providerOverride).toBe("google-gemini-cli");
+    expect(entry.modelOverride).toBe("gemini-2.0-flash");
+  });
+
   test("sets spawnDepth for subagent sessions", async () => {
     const entry = expectPatchOk(
       await runPatch({

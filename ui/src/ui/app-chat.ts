@@ -3,7 +3,7 @@ import { scheduleChatScroll, resetChatScroll } from "./app-scroll.ts";
 import { setLastActiveSessionKey } from "./app-settings.ts";
 import { resetToolStream } from "./app-tool-stream.ts";
 import type { OpenClawApp } from "./app.ts";
-import { executeSlashCommand } from "./chat/slash-command-executor.ts";
+import { executeSlashCommand, type BindDriftCandidate } from "./chat/slash-command-executor.ts";
 import { parseSlashCommand } from "./chat/slash-commands.ts";
 import { abortChatRun, loadChatHistory, sendChatMessage } from "./controllers/chat.ts";
 import { loadModels } from "./controllers/models.ts";
@@ -17,6 +17,19 @@ import { generateUUID } from "./uuid.ts";
 export type ChatHost = {
   client: GatewayBrowserClient | null;
   chatMessages: unknown[];
+  bindRecoveryOpen?: boolean;
+  bindRecoveryLoading?: boolean;
+  bindRecoveryError?: string | null;
+  bindRecoveryCanonicalMainKey?: string;
+  bindRecoveryCurrentSessionId?: string | null;
+  bindRecoveryCandidates?: BindDriftCandidate[];
+  bindRecoverySelectedCandidateKey?: string | null;
+  bindRecoverySubmitting?: boolean;
+  openBindRecovery?: (payload: {
+    canonicalMainKey: string;
+    currentSessionId: string | null;
+    candidates: BindDriftCandidate[];
+  }) => void;
   chatStream: string | null;
   connected: boolean;
   chatMessage: string;
@@ -307,7 +320,9 @@ async function dispatchSlashCommand(
   const targetSessionKey = host.sessionKey;
   const result = await executeSlashCommand(host.client, targetSessionKey, name, args);
 
-  if (result.content) {
+  if (result.action === "open-bind-recovery" && result.bindRecovery) {
+    host.openBindRecovery?.(result.bindRecovery);
+  } else if (result.content) {
     injectCommandResult(host, result.content);
   }
 

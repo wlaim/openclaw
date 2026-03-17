@@ -23,6 +23,7 @@ import {
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
 import { consumeAdjustedParamsForToolCall } from "./pi-tools.before-tool-call.js";
+import { syncStarOfficeToolError, syncStarOfficeToolStart } from "./star-office-status.js";
 import { buildToolMutationState, isSameToolMutationAction } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
 
@@ -313,6 +314,19 @@ export async function handleToolExecutionStart(
 
   // Track start time and args for after_tool_call hook
   toolStartData.set(buildToolStartKey(runId, toolCallId), { startTime: Date.now(), args });
+  if (args && typeof args === "object" && !Array.isArray(args)) {
+    syncStarOfficeToolStart(
+      {
+        agentId: ctx.params.agentId,
+        sessionKey: ctx.params.sessionKey,
+        sessionId: ctx.params.sessionId,
+        runId,
+        workspaceDir: ctx.params.workspaceDir,
+      },
+      toolName,
+      args as Record<string, unknown>,
+    );
+  }
 
   if (toolName === "read") {
     const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
@@ -445,6 +459,17 @@ export async function handleToolExecutionEnd(
   ctx.state.toolSummaryById.delete(toolCallId);
   if (isToolError) {
     const errorMessage = extractToolErrorMessage(sanitizedResult);
+    syncStarOfficeToolError(
+      {
+        agentId: ctx.params.agentId,
+        sessionKey: ctx.params.sessionKey,
+        sessionId: ctx.params.sessionId,
+        runId,
+        workspaceDir: ctx.params.workspaceDir,
+      },
+      toolName,
+      errorMessage,
+    );
     ctx.state.lastToolError = {
       toolName,
       meta,

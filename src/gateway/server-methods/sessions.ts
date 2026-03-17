@@ -14,6 +14,8 @@ import {
   errorShape,
   validateSessionsCompactParams,
   validateSessionsDeleteParams,
+  validateSessionsDriftCandidatesParams,
+  validateSessionsBindCanonicalMainParams,
   validateSessionsListParams,
   validateSessionsPatchParams,
   validateSessionsPreviewParams,
@@ -67,6 +69,98 @@ function resolveGatewaySessionTargetFromKey(key: string) {
   const cfg = loadConfig();
   const target = resolveGatewaySessionStoreTarget({ cfg, key });
   return { cfg, target, storePath: target.storePath };
+}
+
+type MainDriftCandidate = {
+  key: string;
+  label: string;
+  updatedAt: number | null;
+  sessionId?: string;
+  derivedTitle?: string;
+  lastMessagePreview?: string;
+  totalTokens?: number | null;
+  contextTokens?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  isCurrentSession?: boolean;
+};
+
+function resolveCanonicalMainKeyForSession(
+  cfg: ReturnType<typeof loadConfig>,
+  sessionKey?: string,
+): string {
+  const normalized = typeof sessionKey === "string" ? sessionKey.trim() : "";
+  if (!normalized) {
+    return resolveMainSessionKey(cfg);
+  }
+  const parsed = parseAgentSessionKey(normalized);
+  const agentId = normalizeAgentId(parsed?.agentId ?? resolveDefaultAgentId(cfg));
+  return agentId === normalizeAgentId(resolveDefaultAgentId(cfg))
+    ? "main"
+    : `agent:${agentId}:main`;
+}
+
+function buildMainDriftCandidates(sessionKey?: string): {
+  canonicalMainKey: string;
+  canonicalEntry: SessionEntry | undefined;
+  storePath: string;
+  candidates: MainDriftCandidate[];
+} {
+  const cfg = loadConfig();
+  const canonicalMainKey = resolveCanonicalMainKeyForSession(cfg, sessionKey);
+  const parsedMain = parseAgentSessionKey(canonicalMainKey);
+  const canonicalAgentId = normalizeAgentId(parsedMain?.agentId ?? resolveDefaultAgentId(cfg));
+  const normalizedSessionKey = typeof sessionKey === "string" ? sessionKey.trim() : "";
+  const { storePath, store } = loadCombinedSessionStoreForGateway(cfg);
+  const rows = listSessionsFromStore({
+    cfg,
+    storePath,
+    store,
+    opts: {
+      limit: 200,
+      includeGlobal: true,
+      includeUnknown: true,
+      includeDerivedTitles: true,
+      includeLastMessage: true,
+    },
+  });
+  const canonicalEntry = store[canonicalMainKey];
+  const candidates = rows.sessions
+    .filter((row) => row.key !== canonicalMainKey)
+    .filter(
+      (row) => normalizeAgentId(parseAgentSessionKey(row.key)?.agentId ?? "") === canonicalAgentId,
+    )
+    .filter((row) => !row.spawnedBy)
+    .map((row) => ({
+      key: row.key,
+      label: row.label || row.displayName || row.derivedTitle || row.key,
+      updatedAt: row.updatedAt ?? null,
+      sessionId: row.sessionId,
+      derivedTitle: row.derivedTitle,
+      lastMessagePreview: row.lastMessagePreview,
+      totalTokens: row.totalTokens ?? null,
+      contextTokens: row.contextTokens ?? null,
+      inputTokens: row.inputTokens ?? null,
+      outputTokens: row.outputTokens ?? null,
+      isCurrentSession: normalizedSessionKey ? row.key === normalizedSessionKey : false,
+    }))
+    .toSorted((a, b) => {
+      if (a.isCurrentSession && !b.isCurrentSession) {
+        return -1;
+      }
+      if (!a.isCurrentSession && b.isCurrentSession) {
+        return 1;
+      }
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+  return { canonicalMainKey, canonicalEntry, storePath, candidates };
+}
+
+function createSessionStoreBackup(storePath: string): string | null {
+  if (!fs.existsSync(storePath)) {
+    return null;
+  }
+  return archiveFileOnDisk(storePath, "bak");
 }
 
 function rejectWebchatSessionMutation(params: {
@@ -183,6 +277,92 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       return;
     }
     respond(true, { ok: true, key: resolved.key }, undefined);
+  },
+  "sessions.driftCandidates": ({ params, respond }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsDriftCandidatesParams,
+        "sessions.driftCandidates",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const p = params;
+    const result = buildMainDriftCandidates(p.sessionKey);
+    respond(
+      true,
+      {
+        ok: true,
+        canonicalMainKey: result.canonicalMainKey,
+        currentSessionId: result.canonicalEntry?.sessionId ?? null,
+        candidates: result.candidates,
+      },
+      undefined,
+    );
+  },
+  "sessions.bindCanonicalMain": async ({ params, respond, client, isWebchatConnect }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsBindCanonicalMainParams,
+        "sessions.bindCanonicalMain",
+        respond,
+      )
+    ) {
+      return;
+    }
+    if (rejectWebchatSessionMutation({ action: "patch", client, isWebchatConnect, respond })) {
+      return;
+    }
+    const p = params;
+    if (p.confirm !== true) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "confirm=true required"));
+      return;
+    }
+
+    const { canonicalMainKey, storePath, candidates } = buildMainDriftCandidates(p.sessionKey);
+    const candidate = candidates.find((entry) => entry.key === p.candidateKey);
+    if (!candidate) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "candidateKey not found"));
+      return;
+    }
+
+    const backupPath = createSessionStoreBackup(storePath);
+    const applied = await updateSessionStore(storePath, (store) => {
+      const source = store[candidate.key];
+      if (!source) {
+        return { ok: false as const, reason: "missing-source" };
+      }
+      store[canonicalMainKey] = {
+        ...source,
+        updatedAt: Date.now(),
+      };
+      return { ok: true as const, sessionId: source.sessionId ?? null };
+    });
+
+    if (!applied.ok) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "failed to bind canonical main"),
+      );
+      return;
+    }
+
+    respond(
+      true,
+      {
+        ok: true,
+        canonicalMainKey,
+        boundTo: candidate.key,
+        sessionId: applied.sessionId,
+        backupPath,
+        storePath,
+      },
+      undefined,
+    );
   },
   "sessions.patch": async ({ params, respond, context, client, isWebchatConnect }) => {
     if (!assertValidParams(params, validateSessionsPatchParams, "sessions.patch", respond)) {

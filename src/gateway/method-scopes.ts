@@ -123,6 +123,8 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "sessions.reset",
     "sessions.delete",
     "sessions.compact",
+    "sessions.driftCandidates",
+    "sessions.bindCanonicalMain",
     "connect",
     "chat.inject",
     "web.login.start",
