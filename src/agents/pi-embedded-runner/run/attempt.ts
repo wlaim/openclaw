@@ -87,6 +87,7 @@ import {
   applySkillEnvOverridesFromSnapshot,
   resolveSkillsPromptForRun,
 } from "../../skills.js";
+import { syncStarOfficeRunEnd, syncStarOfficeRunStart } from "../../star-office-status.js";
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../../tool-call-id.js";
@@ -2208,6 +2209,7 @@ export async function runEmbeddedAttempt(
         sessionKey: sandboxSessionKey,
         sessionId: params.sessionId,
         agentId: sessionAgentId,
+        workspaceDir: params.workspaceDir,
       });
 
       const {
@@ -2318,6 +2320,16 @@ export async function runEmbeddedAttempt(
           trigger: params.trigger,
           channelId: params.messageChannel ?? params.messageProvider ?? undefined,
         };
+        syncStarOfficeRunStart(
+          {
+            agentId: hookAgentId,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            runId: params.runId,
+            workspaceDir: params.workspaceDir,
+          },
+          params.prompt,
+        );
         const hookResult = await resolvePromptBuildHookResult({
           prompt: params.prompt,
           messages: activeSession.messages,
@@ -2673,6 +2685,17 @@ export async function runEmbeddedAttempt(
         // Run agent_end hooks to allow plugins to analyze the conversation
         // This is fire-and-forget, so we don't await
         // Run even on compaction timeout so plugins can log/cleanup
+        syncStarOfficeRunEnd(
+          {
+            agentId: hookAgentId,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            runId: params.runId,
+            workspaceDir: params.workspaceDir,
+          },
+          !aborted && !promptError,
+          promptError ? describeUnknownError(promptError) : undefined,
+        );
         if (hookRunner?.hasHooks("agent_end")) {
           hookRunner
             .runAgentEnd(

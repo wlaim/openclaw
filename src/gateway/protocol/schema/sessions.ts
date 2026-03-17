@@ -116,6 +116,22 @@ export const SessionsCompactParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const SessionsDriftCandidatesParamsSchema = Type.Object(
+  {
+    sessionKey: Type.Optional(NonEmptyString),
+  },
+  { additionalProperties: false },
+);
+
+export const SessionsBindCanonicalMainParamsSchema = Type.Object(
+  {
+    sessionKey: Type.Optional(NonEmptyString),
+    candidateKey: NonEmptyString,
+    confirm: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+
 export const SessionsUsageParamsSchema = Type.Object(
   {
     /** Specific session key to analyze; if omitted returns all sessions. */

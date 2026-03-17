@@ -87,6 +87,7 @@ import {
   resolveModelPrimary,
   sortLocaleStrings,
 } from "./views/agents-utils.ts";
+import { renderBindRecovery } from "./views/bind-recovery.ts";
 import { renderChat } from "./views/chat.ts";
 import { renderCommandPalette } from "./views/command-palette.ts";
 import { renderConfig } from "./views/config.ts";
@@ -1909,6 +1910,7 @@ export function renderApp(state: AppViewState) {
         }
       </main>
       ${renderExecApprovalPrompt(state)}
+      ${renderBindRecovery(state)}
       ${renderGatewayUrlConfirmation(state)}
       ${nothing}
     </div>

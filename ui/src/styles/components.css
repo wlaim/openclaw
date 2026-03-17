@@ -2665,6 +2665,10 @@
 
 .exec-approval-card {
   width: min(540px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -2717,6 +2721,79 @@
   gap: 6px;
   font-size: 13px;
   color: var(--muted);
+  min-height: 0;
+}
+
+.bind-recovery-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.bind-recovery-row {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) ease,
+    background var(--duration-fast) ease,
+    transform var(--duration-fast) ease;
+}
+
+.bind-recovery-row:hover {
+  background: var(--panel-strong);
+  border-color: var(--accent);
+}
+
+.bind-recovery-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.bind-recovery-row .session-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.bind-recovery-row .session-title-row,
+.bind-recovery-row .session-title,
+.bind-recovery-row .session-subtitle,
+.bind-recovery-row .session-meta {
+  min-width: 0;
+}
+
+.bind-recovery-row .session-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bind-recovery-row .session-subtitle,
+.bind-recovery-row .session-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.bind-recovery-row .session-stats {
+  flex: 0 0 140px;
+  max-width: 140px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .exec-approval-meta-row {
@@ -2741,6 +2818,19 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+  .bind-recovery-row {
+    flex-direction: column;
+  }
+
+  .bind-recovery-row .session-stats {
+    flex: 0 0 auto;
+    max-width: none;
+    text-align: left;
+  }
 }
 
 /* ===========================================

@@ -1179,8 +1179,8 @@ export function renderChat(props: ChatProps) {
           : nothing
       }
 
-      <!-- Input bar -->
-      <div class="agent-chat__input">
+      <!-- Future compose shell -->
+      <div class="chat-compose">
         ${renderSlashMenu(requestUpdate, props)}
         ${renderAttachmentPreview(props)}
 
@@ -1194,131 +1194,153 @@ export function renderChat(props: ChatProps) {
 
         ${vs.sttRecording && vs.sttInterimText ? html`<div class="agent-chat__stt-interim">${vs.sttInterimText}</div>` : nothing}
 
-        <textarea
-          ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
-          .value=${props.draft}
-          dir=${detectTextDirection(props.draft)}
-          ?disabled=${!props.connected}
-          @keydown=${handleKeyDown}
-          @input=${handleInput}
-          @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
-          placeholder=${vs.sttRecording ? "Listening..." : placeholder}
-          rows="1"
-        ></textarea>
+        <div class="chat-compose__row">
+          <div class="chat-compose__zone chat-compose__zone--controls">
+            <div class="agent-chat__toolbar agent-chat__toolbar--compact">
+              <div class="agent-chat__toolbar-left">
+                <button
+                  class="agent-chat__input-btn"
+                  @click=${() => {
+                    document.querySelector<HTMLInputElement>(".agent-chat__file-input")?.click();
+                  }}
+                  title="Attach file"
+                  ?disabled=${!props.connected}
+                >
+                  ${icons.paperclip}
+                </button>
 
-        <div class="agent-chat__toolbar">
-          <div class="agent-chat__toolbar-left">
-            <button
-              class="agent-chat__input-btn"
-              @click=${() => {
-                document.querySelector<HTMLInputElement>(".agent-chat__file-input")?.click();
-              }}
-              title="Attach file"
-              ?disabled=${!props.connected}
-            >
-              ${icons.paperclip}
-            </button>
-
-            ${
-              isSttSupported()
-                ? html`
-                  <button
-                    class="agent-chat__input-btn ${vs.sttRecording ? "agent-chat__input-btn--recording" : ""}"
-                    @click=${() => {
-                      if (vs.sttRecording) {
-                        stopStt();
-                        vs.sttRecording = false;
-                        vs.sttInterimText = "";
-                        requestUpdate();
-                      } else {
-                        const started = startStt({
-                          onTranscript: (text, isFinal) => {
-                            if (isFinal) {
-                              const current = getDraft();
-                              const sep = current && !current.endsWith(" ") ? " " : "";
-                              props.onDraftChange(current + sep + text);
-                              vs.sttInterimText = "";
-                            } else {
-                              vs.sttInterimText = text;
+                ${
+                  isSttSupported()
+                    ? html`
+                      <button
+                        class="agent-chat__input-btn ${vs.sttRecording ? "agent-chat__input-btn--recording" : ""}"
+                        @click=${() => {
+                          if (vs.sttRecording) {
+                            stopStt();
+                            vs.sttRecording = false;
+                            vs.sttInterimText = "";
+                            requestUpdate();
+                          } else {
+                            const started = startStt({
+                              onTranscript: (text, isFinal) => {
+                                if (isFinal) {
+                                  const current = getDraft();
+                                  const sep = current && !current.endsWith(" ") ? " " : "";
+                                  props.onDraftChange(current + sep + text);
+                                  vs.sttInterimText = "";
+                                } else {
+                                  vs.sttInterimText = text;
+                                }
+                                requestUpdate();
+                              },
+                              onStart: () => {
+                                vs.sttRecording = true;
+                                requestUpdate();
+                              },
+                              onEnd: () => {
+                                vs.sttRecording = false;
+                                vs.sttInterimText = "";
+                                requestUpdate();
+                              },
+                              onError: () => {
+                                vs.sttRecording = false;
+                                vs.sttInterimText = "";
+                                requestUpdate();
+                              },
+                            });
+                            if (started) {
+                              vs.sttRecording = true;
+                              requestUpdate();
                             }
-                            requestUpdate();
-                          },
-                          onStart: () => {
-                            vs.sttRecording = true;
-                            requestUpdate();
-                          },
-                          onEnd: () => {
-                            vs.sttRecording = false;
-                            vs.sttInterimText = "";
-                            requestUpdate();
-                          },
-                          onError: () => {
-                            vs.sttRecording = false;
-                            vs.sttInterimText = "";
-                            requestUpdate();
-                          },
-                        });
-                        if (started) {
-                          vs.sttRecording = true;
-                          requestUpdate();
-                        }
-                      }
-                    }}
-                    title=${vs.sttRecording ? "Stop recording" : "Voice input"}
-                    ?disabled=${!props.connected}
-                  >
-                    ${vs.sttRecording ? icons.micOff : icons.mic}
-                  </button>
-                `
-                : nothing
-            }
+                          }
+                        }}
+                        title=${vs.sttRecording ? "Stop recording" : "Voice input"}
+                        ?disabled=${!props.connected}
+                      >
+                        ${vs.sttRecording ? icons.micOff : icons.mic}
+                      </button>
+                    `
+                    : nothing
+                }
 
-            ${tokens ? html`<span class="agent-chat__token-count">${tokens}</span>` : nothing}
+                ${tokens ? html`<span class="agent-chat__token-count">${tokens}</span>` : nothing}
+              </div>
+              <div class="agent-chat__toolbar-right">
+                ${
+                  canAbort
+                    ? nothing
+                    : html`
+                        <button
+                          class="btn-ghost"
+                          @click=${props.onNewSession}
+                          title="New session"
+                          aria-label="New session"
+                        >
+                          ${icons.plus}
+                        </button>
+                      `
+                }
+                <button class="btn-ghost" @click=${() => exportMarkdown(props)} title="Export" ?disabled=${props.messages.length === 0}>
+                  ${icons.download}
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div class="agent-chat__toolbar-right">
-            ${nothing /* search hidden for now */}
-            ${
-              canAbort
-                ? nothing
-                : html`
+          <div class="field chat-compose__field">
+            <div class="chat-compose__input-shell">
+              <textarea
+                ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
+                .value=${props.draft}
+                dir=${detectTextDirection(props.draft)}
+                ?disabled=${!props.connected}
+                @keydown=${handleKeyDown}
+                @input=${handleInput}
+                @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
+                placeholder=${vs.sttRecording ? "Listening..." : placeholder}
+                rows="1"
+              ></textarea>
+              ${
+                canAbort && (isBusy || props.sending)
+                  ? html`
                     <button
-                      class="btn-ghost"
-                      @click=${props.onNewSession}
-                      title="New session"
-                      aria-label="New session"
+                      class="chat-compose__stop"
+                      type="button"
+                      ?disabled=${!props.connected}
+                      @click=${props.onAbort}
+                      aria-label="Stop generating"
+                      title="Stop generating"
                     >
-                      ${icons.plus}
+                      <span class="chat-compose__stop-icon" aria-hidden="true">${icons.stop}</span>
+                      <span class="chat-compose__stop-label">Stop</span>
                     </button>
                   `
-            }
-            <button class="btn-ghost" @click=${() => exportMarkdown(props)} title="Export" ?disabled=${props.messages.length === 0}>
-              ${icons.download}
-            </button>
+                  : nothing
+              }
+            </div>
+          </div>
 
-            ${
-              canAbort && (isBusy || props.sending)
-                ? html`
-                  <button class="chat-send-btn chat-send-btn--stop" @click=${props.onAbort} title="Stop">
-                    ${icons.stop}
-                  </button>
-                `
-                : html`
-                  <button
-                    class="chat-send-btn"
-                    @click=${() => {
-                      if (props.draft.trim()) {
-                        inputHistory.push(props.draft);
-                      }
-                      props.onSend();
-                    }}
-                    ?disabled=${!props.connected || props.sending}
-                    title=${isBusy ? "Queue" : "Send"}
-                  >
-                    ${icons.send}
-                  </button>
-                `
-            }
+          <div class="chat-compose__zone chat-compose__zone--send">
+            <div class="chat-compose__actions">
+              ${
+                canAbort && (isBusy || props.sending)
+                  ? nothing
+                  : html`
+                    <button
+                      class="btn primary chat-compose__send"
+                      @click=${() => {
+                        if (props.draft.trim()) {
+                          inputHistory.push(props.draft);
+                        }
+                        props.onSend();
+                      }}
+                      ?disabled=${!props.connected || props.sending}
+                    >
+                      ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
+                    </button>
+                  `
+              }
+            </div>
           </div>
         </div>
       </div>

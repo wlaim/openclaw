@@ -1,5 +1,6 @@
 import type { EventLogEntry } from "./app-events.ts";
 import type { CompactionStatus, FallbackStatus } from "./app-tool-stream.ts";
+import type { BindDriftCandidate } from "./chat/slash-command-executor.ts";
 import type { CronModelSuggestionsState, CronState } from "./controllers/cron.ts";
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
@@ -62,6 +63,22 @@ export type AppViewState = {
   chatMessage: string;
   chatAttachments: ChatAttachment[];
   chatMessages: unknown[];
+  bindRecoveryOpen: boolean;
+  bindRecoveryLoading: boolean;
+  bindRecoveryError: string | null;
+  bindRecoveryCanonicalMainKey: string;
+  bindRecoveryCurrentSessionId: string | null;
+  bindRecoveryCandidates: BindDriftCandidate[];
+  bindRecoverySelectedCandidateKey: string | null;
+  bindRecoverySubmitting: boolean;
+  openBindRecovery: (payload: {
+    canonicalMainKey: string;
+    currentSessionId: string | null;
+    candidates: BindDriftCandidate[];
+  }) => void;
+  closeBindRecovery: () => void;
+  selectBindRecoveryCandidate: (candidateKey: string | null) => void;
+  confirmBindRecovery: () => Promise<void>;
   chatToolMessages: unknown[];
   chatStreamSegments: Array<{ text: string; ts: number }>;
   chatStream: string | null;

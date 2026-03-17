@@ -60,6 +60,13 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
     category: "session",
     executeLocal: true,
   },
+  {
+    name: "bind",
+    description: "Recover canonical main session binding",
+    icon: "link",
+    category: "session",
+    executeLocal: true,
+  },
 
   // ── Model ──
   {

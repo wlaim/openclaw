@@ -17,6 +17,7 @@ import {
 import {
   handleAbortChat as handleAbortChatInternal,
   handleSendChat as handleSendChatInternal,
+  refreshChat as refreshChatInternal,
   removeQueuedMessage as removeQueuedMessageInternal,
 } from "./app-chat.ts";
 import { DEFAULT_CRON_FORM, DEFAULT_LOG_LEVEL_FILTERS } from "./app-defaults.ts";
@@ -149,6 +150,15 @@ export class OpenClawApp extends LitElement {
   @state() chatSending = false;
   @state() chatMessage = "";
   @state() chatMessages: unknown[] = [];
+  @state() bindRecoveryOpen = false;
+  @state() bindRecoveryLoading = false;
+  @state() bindRecoveryError: string | null = null;
+  @state() bindRecoveryCanonicalMainKey = "main";
+  @state() bindRecoveryCurrentSessionId: string | null = null;
+  @state() bindRecoveryCandidates: import("./chat/slash-command-executor.ts").BindDriftCandidate[] =
+    [];
+  @state() bindRecoverySelectedCandidateKey: string | null = null;
+  @state() bindRecoverySubmitting = false;
   @state() chatToolMessages: unknown[] = [];
   @state() chatStreamSegments: Array<{ text: string; ts: number }> = [];
   @state() chatStream: string | null = null;
@@ -481,6 +491,76 @@ export class OpenClawApp extends LitElement {
     document.addEventListener("keydown", this.globalKeydownHandler);
     handleConnected(this as unknown as Parameters<typeof handleConnected>[0]);
   }
+
+  openBindRecovery = (payload: {
+    canonicalMainKey: string;
+    currentSessionId: string | null;
+    candidates: import("./chat/slash-command-executor.ts").BindDriftCandidate[];
+  }) => {
+    this.bindRecoveryOpen = true;
+    this.bindRecoveryLoading = false;
+    this.bindRecoveryError = null;
+    this.bindRecoveryCanonicalMainKey = payload.canonicalMainKey;
+    this.bindRecoveryCurrentSessionId = payload.currentSessionId;
+    this.bindRecoveryCandidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+    this.bindRecoverySelectedCandidateKey = null;
+    this.bindRecoverySubmitting = false;
+  };
+
+  closeBindRecovery = () => {
+    if (this.bindRecoverySubmitting) {
+      return;
+    }
+    this.bindRecoveryOpen = false;
+    this.bindRecoveryError = null;
+    this.bindRecoverySelectedCandidateKey = null;
+  };
+
+  selectBindRecoveryCandidate = (candidateKey: string | null) => {
+    this.bindRecoverySelectedCandidateKey = candidateKey;
+    this.bindRecoveryError = null;
+  };
+
+  confirmBindRecovery = async () => {
+    const candidateKey = this.bindRecoverySelectedCandidateKey;
+    if (!candidateKey || !this.client || this.bindRecoverySubmitting) {
+      return;
+    }
+    this.bindRecoverySubmitting = true;
+    this.bindRecoveryError = null;
+    try {
+      const result = await this.client.request<{
+        ok?: boolean;
+        canonicalMainKey: string;
+        boundTo: string;
+        sessionId: string | null;
+        backupPath: string | null;
+        storePath: string;
+      }>("sessions.bindCanonicalMain", {
+        sessionKey: this.sessionKey,
+        candidateKey,
+        confirm: true,
+      });
+      const backupText = result?.backupPath ? `\nBackup: \`${result.backupPath}\`` : "";
+      this.chatMessages = [
+        ...this.chatMessages,
+        {
+          role: "system",
+          content:
+            `Bound canonical main \`${result?.canonicalMainKey ?? this.bindRecoveryCanonicalMainKey}\` → \`${result?.boundTo ?? candidateKey}\`.` +
+            `${backupText}\nResult sessionId: \`${result?.sessionId ?? "unknown"}\`\nNo transcripts were deleted.`,
+          timestamp: Date.now(),
+        },
+      ];
+      this.bindRecoveryOpen = false;
+      this.bindRecoverySelectedCandidateKey = null;
+      await refreshChatInternal(this as unknown as Parameters<typeof refreshChatInternal>[0]);
+    } catch (err) {
+      this.bindRecoveryError = String(err);
+    } finally {
+      this.bindRecoverySubmitting = false;
+    }
+  };
 
   protected firstUpdated() {
     handleFirstUpdated(this as unknown as Parameters<typeof handleFirstUpdated>[0]);

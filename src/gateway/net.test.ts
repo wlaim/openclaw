@@ -346,6 +346,14 @@ describe("pickPrimaryLanIPv4", () => {
       vi.restoreAllMocks();
     }
   });
+
+  it("returns undefined when networkInterfaces throws", () => {
+    vi.spyOn(os, "networkInterfaces").mockImplementation(() => {
+      throw new Error("uv_interface_addresses returned Unknown system error 1");
+    });
+
+    expect(pickPrimaryLanIPv4()).toBeUndefined();
+  });
 });
 
 describe("isPrivateOrLoopbackAddress", () => {

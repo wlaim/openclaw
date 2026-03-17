@@ -128,11 +128,18 @@ function renderCronFilterIcon(hiddenCount: number) {
 
 export function renderChatSessionSelect(state: AppViewState) {
   const sessionGroups = resolveSessionOptionGroups(state, state.sessionKey, state.sessionsResult);
+  const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
+  const sessionPickerTitle = activeRow?.label?.trim() || state.sessionKey;
   const modelSelect = renderChatModelSelect(state);
   return html`
     <div class="chat-controls__session-row">
-      <label class="field chat-controls__session">
+      <label
+        class="btn btn--sm btn--icon chat-controls__icon-control chat-controls__picker-select"
+        title=${sessionPickerTitle}
+        aria-label=${sessionPickerTitle}
+      >
         <select
+          class="chat-controls__native-select"
           .value=${state.sessionKey}
           ?disabled=${!state.connected || sessionGroups.length === 0}
           @change=${(e: Event) => {
@@ -159,6 +166,9 @@ export function renderChatSessionSelect(state: AppViewState) {
               </optgroup>`,
           )}
         </select>
+        <span class="chat-controls__picker-content" aria-hidden="true">
+          <span class="chat-controls__control-icon">${icons.messageSquare}</span>
+        </span>
       </label>
       ${modelSelect}
     </div>
@@ -327,11 +337,23 @@ function resolveActiveSessionRow(state: AppViewState) {
   return state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
 }
 
+function buildModelRef(model?: string | null, provider?: string | null): string {
+  const trimmedModel = typeof model === "string" ? model.trim() : "";
+  if (!trimmedModel) {
+    return "";
+  }
+  if (trimmedModel.includes("/")) {
+    return trimmedModel;
+  }
+  const trimmedProvider = typeof provider === "string" ? provider.trim() : "";
+  return trimmedProvider ? `${trimmedProvider}/${trimmedModel}` : trimmedModel;
+}
+
 function resolveModelOverrideValue(state: AppViewState): string {
   // Prefer the local cache — it reflects in-flight patches before sessionsResult refreshes.
   const cached = state.chatModelOverrides[state.sessionKey];
   if (typeof cached === "string") {
-    return cached.trim();
+    return buildModelRef(cached, resolveActiveSessionRow(state)?.modelProvider);
   }
   // cached === null means explicitly cleared to default.
   if (cached === null) {
@@ -340,7 +362,7 @@ function resolveModelOverrideValue(state: AppViewState): string {
   // No local override recorded yet — fall back to server data.
   const activeRow = resolveActiveSessionRow(state);
   if (activeRow) {
-    return typeof activeRow.model === "string" ? activeRow.model.trim() : "";
+    return buildModelRef(activeRow.model, activeRow.modelProvider);
   }
   return "";
 }
@@ -372,7 +394,7 @@ function buildChatModelOptions(
 
   for (const entry of catalog) {
     const provider = entry.provider?.trim();
-    addOption(entry.id, provider ? `${entry.id} · ${provider}` : entry.id);
+    addOption(buildModelRef(entry.id, provider), provider ? `${entry.id} · ${provider}` : entry.id);
   }
 
   if (currentOverride) {
@@ -384,6 +406,25 @@ function buildChatModelOptions(
   return options;
 }
 
+function normalizeSelectedModelRef(
+  rawValue: string,
+  catalog: ModelCatalogEntry[],
+  fallbackProvider?: string | null,
+): string {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.includes("/")) {
+    return trimmed;
+  }
+  const matches = catalog.filter((entry) => entry.id?.trim() === trimmed);
+  if (matches.length === 1) {
+    return buildModelRef(trimmed, matches[0]?.provider);
+  }
+  return buildModelRef(trimmed, fallbackProvider);
+}
+
 function renderChatModelSelect(state: AppViewState) {
   const currentOverride = resolveModelOverrideValue(state);
   const defaultModel = resolveDefaultModelValue(state);
@@ -393,14 +434,20 @@ function renderChatModelSelect(state: AppViewState) {
     defaultModel,
   );
   const defaultLabel = defaultModel ? `Default (${defaultModel})` : "Default model";
+  const modelPickerTitle = currentOverride || defaultLabel;
   const busy =
     state.chatLoading || state.chatSending || Boolean(state.chatRunId) || state.chatStream !== null;
   const disabled =
     !state.connected || busy || (state.chatModelsLoading && options.length === 0) || !state.client;
   return html`
-    <label class="field chat-controls__session chat-controls__model">
+    <label
+      class="btn btn--sm btn--icon chat-controls__icon-control chat-controls__picker-select"
+      title=${modelPickerTitle}
+      aria-label=${modelPickerTitle}
+    >
       <select
         data-chat-model-select="true"
+        class="chat-controls__native-select"
         aria-label="Chat model"
         ?disabled=${disabled}
         @change=${async (e: Event) => {
@@ -418,6 +465,9 @@ function renderChatModelSelect(state: AppViewState) {
             </option>`,
         )}
       </select>
+      <span class="chat-controls__picker-content" aria-hidden="true">
+        <span class="chat-controls__control-icon">${icons.brain}</span>
+      </span>
     </label>
   `;
 }
@@ -426,8 +476,13 @@ async function switchChatModel(state: AppViewState, nextModel: string) {
   if (!state.client || !state.connected) {
     return;
   }
+  const normalizedNextModel = normalizeSelectedModelRef(
+    nextModel,
+    state.chatModelCatalog ?? [],
+    resolveActiveSessionRow(state)?.modelProvider,
+  );
   const currentOverride = resolveModelOverrideValue(state);
-  if (currentOverride === nextModel) {
+  if (currentOverride === normalizedNextModel) {
     return;
   }
   const targetSessionKey = state.sessionKey;
@@ -436,12 +491,12 @@ async function switchChatModel(state: AppViewState, nextModel: string) {
   // Write the override cache immediately so the picker stays in sync during the RPC round-trip.
   state.chatModelOverrides = {
     ...state.chatModelOverrides,
-    [targetSessionKey]: nextModel || null,
+    [targetSessionKey]: normalizedNextModel || null,
   };
   try {
     await state.client.request("sessions.patch", {
       key: targetSessionKey,
-      model: nextModel || null,
+      model: normalizedNextModel || null,
     });
     await refreshSessionOptions(state);
   } catch (err) {

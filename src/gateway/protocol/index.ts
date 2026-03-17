@@ -190,6 +190,10 @@ import {
   SessionsCompactParamsSchema,
   type SessionsDeleteParams,
   SessionsDeleteParamsSchema,
+  type SessionsDriftCandidatesParams,
+  SessionsDriftCandidatesParamsSchema,
+  type SessionsBindCanonicalMainParams,
+  SessionsBindCanonicalMainParamsSchema,
   type SessionsListParams,
   SessionsListParamsSchema,
   type SessionsPatchParams,
@@ -333,6 +337,12 @@ export const validateSessionsDeleteParams = ajv.compile<SessionsDeleteParams>(
 );
 export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
   SessionsCompactParamsSchema,
+);
+export const validateSessionsDriftCandidatesParams = ajv.compile<SessionsDriftCandidatesParams>(
+  SessionsDriftCandidatesParamsSchema,
+);
+export const validateSessionsBindCanonicalMainParams = ajv.compile<SessionsBindCanonicalMainParams>(
+  SessionsBindCanonicalMainParamsSchema,
 );
 export const validateSessionsUsageParams =
   ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);

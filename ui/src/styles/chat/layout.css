@@ -301,6 +301,19 @@
 }
 
 /* Compose input row - horizontal layout */
+.chat-compose {
+  position: sticky;
+  bottom: 0;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: auto;
+  padding: 12px 4px 4px;
+  background: linear-gradient(to bottom, transparent, var(--bg) 20%);
+  z-index: 10;
+}
+
 .chat-compose__row {
   display: flex;
   align-items: stretch;
@@ -310,6 +323,27 @@
 
 :root[data-theme-mode="light"] .chat-compose {
   background: linear-gradient(to bottom, transparent, var(--bg-content) 20%);
+}
+
+.chat-compose__zone {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  min-height: var(--chat-compose-control-height, 40px);
+}
+
+.chat-compose__zone--controls,
+.chat-compose__zone--send {
+  flex: 0 0 auto;
+}
+
+.chat-compose__zone--controls {
+  align-self: stretch;
+}
+
+.chat-compose__zone--send {
+  margin-left: auto;
+  align-self: stretch;
 }
 
 .chat-compose__field {
@@ -322,6 +356,20 @@
 /* Hide the "Message" label - keep textarea only */
 .chat-compose__field > span {
   display: none;
+}
+
+
+.chat-compose__input-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-height: var(--chat-compose-control-height, 40px);
+  border: 1px solid rgba(124, 242, 214, 0.14);
+  border-radius: calc(var(--radius-md) + 2px);
+  background: rgba(24, 30, 42, 0.8);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow: hidden;
 }
 
 /* Override .field textarea min-height (180px) from components.css */
@@ -338,6 +386,9 @@
   font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.45;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .chat-compose__field textarea:disabled {
@@ -350,6 +401,7 @@
   display: flex;
   align-items: stretch;
   gap: 8px;
+  height: 100%;
 }
 
 .chat-compose .chat-compose__actions .btn {
@@ -361,6 +413,62 @@
   line-height: 1;
   white-space: nowrap;
   box-sizing: border-box;
+}
+
+.chat-compose__stop {
+  flex: 0 0 auto;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 0;
+  border-left: 1px solid rgba(124, 242, 214, 0.12);
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+}
+
+.chat-compose__stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.chat-compose__stop:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chat-compose__stop-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-compose__stop-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-compose__stop-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-compose__send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 108px;
+}
+
+.btn-kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.9;
 }
 
 .agent-chat__input {
@@ -417,6 +525,16 @@
   justify-content: space-between;
   padding: 6px 10px;
   border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.agent-chat__toolbar--compact {
+  height: 100%;
+  padding: 0 10px;
+  border-top: 0;
+  border: 1px solid rgba(124, 242, 214, 0.12);
+  border-radius: calc(var(--radius-md) + 2px);
+  background: rgba(24, 30, 42, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .agent-chat__toolbar-left,
@@ -699,11 +817,25 @@
 
 /* Chat controls - moved to content-header area, left aligned */
 .chat-controls {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
+  flex-wrap: nowrap;
+  min-width: fit-content;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-lg) + 2px);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.chat-controls__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: fit-content;
 }
 
 .chat-controls__session {
@@ -712,10 +844,10 @@
 }
 
 .chat-controls__session-row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .chat-controls__model {
@@ -728,6 +860,69 @@
   align-items: center;
   gap: 6px;
   font-size: 13px;
+}
+
+.chat-controls__menu {
+  position: relative;
+}
+
+.chat-controls__menu > summary {
+  list-style: none;
+}
+
+.chat-controls__menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-controls__menu[open] > summary {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-subtle);
+}
+
+.chat-controls__icon-control {
+  width: var(--chat-toolbar-button-size, 36px);
+  min-width: var(--chat-toolbar-button-size, 36px);
+  height: var(--chat-toolbar-button-size, 36px);
+  flex: 0 0 var(--chat-toolbar-button-size, 36px);
+  padding: 0 !important;
+  gap: 0;
+}
+
+.chat-controls__picker-select {
+  position: relative;
+}
+
+.chat-controls__picker-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.chat-controls__control-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-controls__native-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+}
+
+.chat-controls__native-select:disabled {
+  cursor: not-allowed;
 }
 
 /* Icon button style */
@@ -839,14 +1034,19 @@
     min-width: 140px;
   }
 
-  .chat-compose {
-    grid-template-columns: 1fr;
-  }
-
   /* Mobile: stack compose row vertically */
   .chat-compose__row {
     flex-direction: column;
     gap: 8px;
+  }
+
+  .chat-compose__zone--controls,
+  .chat-compose__zone--send {
+    width: 100%;
+  }
+
+  .chat-compose__input-shell {
+    min-height: 44px;
   }
 
   /* Mobile: stack action buttons vertically */
