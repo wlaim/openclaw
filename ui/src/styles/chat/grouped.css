@@ -5,11 +5,12 @@
 /* Chat Group Layout - default (assistant/other on left) */
 .chat-group {
   display: flex;
-  gap: 12px;
+  width: 100%;
+  gap: 6px;
   align-items: flex-start;
-  margin-bottom: 16px;
-  margin-left: 4px;
-  margin-right: 16px;
+  margin-bottom: 10px;
+  margin-left: 0;
+  margin-right: 0;
 }
 
 /* User messages on right */
@@ -20,9 +21,12 @@
 
 .chat-group-messages {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: min(100%, 100%);
   flex-direction: column;
   gap: 2px;
-  max-width: min(980px, calc(100% - 60px));
+  max-width: none;
 }
 
 /* User messages align content right */
@@ -132,17 +136,18 @@
 
 /* Avatar Styles */
 .chat-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
   background: var(--panel-strong);
   display: grid;
   place-items: center;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 10px;
   flex-shrink: 0;
-  align-self: flex-end;
-  margin-bottom: 4px;
+  align-self: flex-start;
+  margin-top: 2px;
+  margin-bottom: 0;
   border: 1px solid var(--border);
 }
 
@@ -174,14 +179,20 @@ img.chat-avatar {
   object-position: center;
 }
 
+.chat-avatar svg {
+  width: 11px;
+  height: 11px;
+}
+
 /* Minimal Bubble Design - dynamic width based on content */
 .chat-bubble {
   position: relative;
-  display: inline-block;
+  display: block;
+  width: 100%;
   border: 1px solid var(--border);
   background: var(--card);
   border-radius: var(--radius-lg);
-  padding: 10px 14px;
+  padding: 9px 12px;
   box-shadow: none;
   transition:
     background var(--duration-fast) ease-out,

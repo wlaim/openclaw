@@ -823,8 +823,8 @@ export function renderChat(props: ChatProps) {
 
   const placeholder = props.connected
     ? hasAttachments
-      ? "Add a message or paste more images..."
-      : `Message ${props.assistantName || "agent"} (Enter to send)`
+      ? "Message..."
+      : "Message..."
     : "Connect to the gateway to start chatting...";
 
   const requestUpdate = props.onRequestUpdate ?? (() => {});
@@ -1194,99 +1194,7 @@ export function renderChat(props: ChatProps) {
 
         ${vs.sttRecording && vs.sttInterimText ? html`<div class="agent-chat__stt-interim">${vs.sttInterimText}</div>` : nothing}
 
-        <div class="chat-compose__row">
-          <div class="chat-compose__zone chat-compose__zone--controls">
-            <div class="agent-chat__toolbar agent-chat__toolbar--compact">
-              <div class="agent-chat__toolbar-left">
-                <button
-                  class="agent-chat__input-btn"
-                  @click=${() => {
-                    document.querySelector<HTMLInputElement>(".agent-chat__file-input")?.click();
-                  }}
-                  title="Attach file"
-                  ?disabled=${!props.connected}
-                >
-                  ${icons.paperclip}
-                </button>
-
-                ${
-                  isSttSupported()
-                    ? html`
-                      <button
-                        class="agent-chat__input-btn ${vs.sttRecording ? "agent-chat__input-btn--recording" : ""}"
-                        @click=${() => {
-                          if (vs.sttRecording) {
-                            stopStt();
-                            vs.sttRecording = false;
-                            vs.sttInterimText = "";
-                            requestUpdate();
-                          } else {
-                            const started = startStt({
-                              onTranscript: (text, isFinal) => {
-                                if (isFinal) {
-                                  const current = getDraft();
-                                  const sep = current && !current.endsWith(" ") ? " " : "";
-                                  props.onDraftChange(current + sep + text);
-                                  vs.sttInterimText = "";
-                                } else {
-                                  vs.sttInterimText = text;
-                                }
-                                requestUpdate();
-                              },
-                              onStart: () => {
-                                vs.sttRecording = true;
-                                requestUpdate();
-                              },
-                              onEnd: () => {
-                                vs.sttRecording = false;
-                                vs.sttInterimText = "";
-                                requestUpdate();
-                              },
-                              onError: () => {
-                                vs.sttRecording = false;
-                                vs.sttInterimText = "";
-                                requestUpdate();
-                              },
-                            });
-                            if (started) {
-                              vs.sttRecording = true;
-                              requestUpdate();
-                            }
-                          }
-                        }}
-                        title=${vs.sttRecording ? "Stop recording" : "Voice input"}
-                        ?disabled=${!props.connected}
-                      >
-                        ${vs.sttRecording ? icons.micOff : icons.mic}
-                      </button>
-                    `
-                    : nothing
-                }
-
-                ${tokens ? html`<span class="agent-chat__token-count">${tokens}</span>` : nothing}
-              </div>
-              <div class="agent-chat__toolbar-right">
-                ${
-                  canAbort
-                    ? nothing
-                    : html`
-                        <button
-                          class="btn-ghost"
-                          @click=${props.onNewSession}
-                          title="New session"
-                          aria-label="New session"
-                        >
-                          ${icons.plus}
-                        </button>
-                      `
-                }
-                <button class="btn-ghost" @click=${() => exportMarkdown(props)} title="Export" ?disabled=${props.messages.length === 0}>
-                  ${icons.download}
-                </button>
-              </div>
-            </div>
-          </div>
-
+        <div class="chat-compose__row chat-compose__row--entry">
           <div class="field chat-compose__field">
             <div class="chat-compose__input-shell">
               <textarea
@@ -1320,12 +1228,13 @@ export function renderChat(props: ChatProps) {
             </div>
           </div>
 
-          <div class="chat-compose__zone chat-compose__zone--send">
-            <div class="chat-compose__actions">
-              ${
-                canAbort && (isBusy || props.sending)
-                  ? nothing
-                  : html`
+          <div class="chat-compose__side-stack">
+            <div class="chat-compose__zone chat-compose__zone--send">
+              <div class="chat-compose__actions">
+                ${
+                  canAbort && (isBusy || props.sending)
+                    ? nothing
+                    : html`
                     <button
                       class="btn primary chat-compose__send"
                       @click=${() => {
@@ -1339,7 +1248,102 @@ export function renderChat(props: ChatProps) {
                       ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
                     </button>
                   `
-              }
+                }
+              </div>
+            </div>
+
+            <div class="chat-compose__zone chat-compose__zone--controls">
+              <div class="agent-chat__toolbar agent-chat__toolbar--compact">
+                <div class="agent-chat__toolbar-main">
+                  <div class="agent-chat__toolbar-left">
+                    <button
+                      class="agent-chat__input-btn"
+                      @click=${() => {
+                        document
+                          .querySelector<HTMLInputElement>(".agent-chat__file-input")
+                          ?.click();
+                      }}
+                      title="Attach file"
+                      ?disabled=${!props.connected}
+                    >
+                      ${icons.paperclip}
+                    </button>
+
+                    ${
+                      isSttSupported()
+                        ? html`
+                          <button
+                            class="agent-chat__input-btn ${vs.sttRecording ? "agent-chat__input-btn--recording" : ""}"
+                            @click=${() => {
+                              if (vs.sttRecording) {
+                                stopStt();
+                                vs.sttRecording = false;
+                                vs.sttInterimText = "";
+                                requestUpdate();
+                              } else {
+                                const started = startStt({
+                                  onTranscript: (text, isFinal) => {
+                                    if (isFinal) {
+                                      const current = getDraft();
+                                      const sep = current && !current.endsWith(" ") ? " " : "";
+                                      props.onDraftChange(current + sep + text);
+                                      vs.sttInterimText = "";
+                                    } else {
+                                      vs.sttInterimText = text;
+                                    }
+                                    requestUpdate();
+                                  },
+                                  onStart: () => {
+                                    vs.sttRecording = true;
+                                    requestUpdate();
+                                  },
+                                  onEnd: () => {
+                                    vs.sttRecording = false;
+                                    vs.sttInterimText = "";
+                                    requestUpdate();
+                                  },
+                                  onError: () => {
+                                    vs.sttRecording = false;
+                                    vs.sttInterimText = "";
+                                    requestUpdate();
+                                  },
+                                });
+                                if (started) {
+                                  vs.sttRecording = true;
+                                  requestUpdate();
+                                }
+                              }
+                            }}
+                            title=${vs.sttRecording ? "Stop recording" : "Voice input"}
+                            ?disabled=${!props.connected}
+                          >
+                            ${vs.sttRecording ? icons.micOff : icons.mic}
+                          </button>
+                        `
+                        : nothing
+                    }
+
+                    ${
+                      canAbort
+                        ? nothing
+                        : html`
+                            <button
+                              class="btn-ghost"
+                              @click=${props.onNewSession}
+                              title="New session"
+                              aria-label="New session"
+                            >
+                              ${icons.plus}
+                            </button>
+                          `
+                    }
+                    <button class="btn-ghost" @click=${() => exportMarkdown(props)} title="Export" ?disabled=${props.messages.length === 0}>
+                      ${icons.download}
+                    </button>
+                  </div>
+                </div>
+                ${tokens ? html`<div class="agent-chat__toolbar-meta"><span class="agent-chat__token-count">${tokens}</span></div>` : nothing}
+              </div>
             </div>
           </div>
         </div>

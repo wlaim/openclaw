@@ -33,6 +33,7 @@
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;
+  --shell-topbar-height: 44px;
 }
 
 @supports (height: 100dvh) {
@@ -848,7 +849,7 @@
 
 .content {
   grid-area: content;
-  padding: 16px 20px 32px;
+  padding: 2px 2px 4px;
   display: block;
   min-height: 0;
   overflow-y: auto;
@@ -866,9 +867,9 @@
 .content--chat {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   overflow: hidden;
-  padding-bottom: 0;
+  padding: 0;
 }
 
 .content--chat > * + * {
@@ -923,19 +924,31 @@
 
 /* Chat view header adjustments */
 .content--chat .content-header {
-  flex-direction: row;
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 0;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+}
+
+.content--chat .content-header > * {
+  min-width: 0;
 }
 
 .content--chat .content-header > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
   text-align: left;
 }
 
 .content--chat .page-meta {
-  justify-content: flex-start;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-width: fit-content;
+  flex: 0 0 auto;
 }
 
 .content--chat .chat-controls {
