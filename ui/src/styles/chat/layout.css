@@ -314,10 +314,10 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   margin-top: auto;
   padding: 0;
-  background: linear-gradient(to bottom, transparent, var(--bg) 1%);
+  background: linear-gradient(to bottom, transparent, var(--bg) 0.5%);
   z-index: 10;
 }
 
@@ -508,6 +508,23 @@
   justify-content: center;
   gap: 8px;
   min-width: 108px;
+}
+
+.chat-compose__send--inline {
+  min-width: 40px;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  padding: 0;
+  border-radius: 10px;
+  margin-right: 2px;
+  gap: 0;
+}
+
+.chat-compose__send--inline svg {
+  width: 15px;
+  height: 15px;
 }
 
 .btn-kbd {

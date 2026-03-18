@@ -1223,20 +1223,9 @@ export function renderChat(props: ChatProps) {
                       <span class="chat-compose__stop-label">Stop</span>
                     </button>
                   `
-                  : nothing
-              }
-            </div>
-          </div>
-
-          <div class="chat-compose__side-stack">
-            <div class="chat-compose__zone chat-compose__zone--send">
-              <div class="chat-compose__actions">
-                ${
-                  canAbort && (isBusy || props.sending)
-                    ? nothing
-                    : html`
+                  : html`
                     <button
-                      class="btn primary chat-compose__send"
+                      class="btn primary chat-compose__send chat-compose__send--inline"
                       @click=${() => {
                         if (props.draft.trim()) {
                           inputHistory.push(props.draft);
@@ -1244,14 +1233,17 @@ export function renderChat(props: ChatProps) {
                         props.onSend();
                       }}
                       ?disabled=${!props.connected || props.sending}
+                      aria-label=${isBusy ? "Queue message" : "Send message"}
+                      title=${isBusy ? "Queue" : "Send"}
                     >
-                      ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
+                      ${icons.send}
                     </button>
                   `
-                }
-              </div>
+              }
             </div>
+          </div>
 
+          <div class="chat-compose__side-stack">
             <div class="chat-compose__zone chat-compose__zone--controls">
               <div class="agent-chat__toolbar agent-chat__toolbar--compact">
                 <div class="agent-chat__toolbar-main">
