@@ -4,15 +4,16 @@ import {
   readStringArrayParam,
   readStringParam,
 } from "openclaw/plugin-sdk/agent-runtime";
-import { readDiscordParentIdParam } from "openclaw/plugin-sdk/agent-runtime";
-import { handleDiscordAction } from "openclaw/plugin-sdk/agent-runtime";
 import { readBooleanParam } from "openclaw/plugin-sdk/boolean-param";
-import { resolveReactionMessageId } from "openclaw/plugin-sdk/channel-runtime";
-import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-runtime";
-import { normalizeInteractiveReply } from "openclaw/plugin-sdk/channel-runtime";
+import { resolveReactionMessageId } from "openclaw/plugin-sdk/channel-actions";
+import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-contract";
+import { normalizeInteractiveReply } from "openclaw/plugin-sdk/interactive-runtime";
+import { normalizeOptionalStringifiedId } from "openclaw/plugin-sdk/text-runtime";
+import { handleDiscordAction } from "../../action-runtime-api.js";
 import { buildDiscordInteractiveComponents } from "../shared-interactive.js";
 import { resolveDiscordChannelId } from "../targets.js";
 import { tryHandleDiscordMessageActionGuildAdmin } from "./handle-action.guild-admin.js";
+import { readDiscordParentIdParam } from "./runtime.shared.js";
 
 const providerId = "discord";
 
@@ -25,13 +26,17 @@ export async function handleDiscordMessageAction(
     | "accountId"
     | "requesterSenderId"
     | "toolContext"
+    | "mediaAccess"
     | "mediaLocalRoots"
+    | "mediaReadFile"
   >,
 ): Promise<AgentToolResult<unknown>> {
   const { action, params, cfg } = ctx;
   const accountId = ctx.accountId ?? readStringParam(params, "accountId");
   const actionOptions = {
+    mediaAccess: ctx.mediaAccess,
     mediaLocalRoots: ctx.mediaLocalRoots,
+    mediaReadFile: ctx.mediaReadFile,
   } as const;
 
   const resolveChannelId = () =>
@@ -115,7 +120,7 @@ export async function handleDiscordMessageAction(
 
   if (action === "react") {
     const messageIdRaw = resolveReactionMessageId({ args: params, toolContext: ctx.toolContext });
-    const messageId = messageIdRaw != null ? String(messageIdRaw).trim() : "";
+    const messageId = normalizeOptionalStringifiedId(messageIdRaw) ?? "";
     if (!messageId) {
       throw new Error(
         "messageId required. Provide messageId explicitly or react to the current inbound message.",
