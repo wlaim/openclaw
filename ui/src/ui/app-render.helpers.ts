@@ -1,18 +1,29 @@
 import { html, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
-import { parseAgentSessionKey } from "../../../src/sessions/session-key-utils.js";
 import { t } from "../i18n/index.ts";
 import { refreshChat } from "./app-chat.ts";
 import { syncUrlWithSessionKey } from "./app-settings.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import { OpenClawApp } from "./app.ts";
+import { createChatModelOverride } from "./chat-model-ref.ts";
+import {
+  resolveChatModelOverrideValue,
+  resolveChatModelSelectState,
+} from "./chat-model-select-state.ts";
+import { refreshVisibleToolsEffectiveForCurrentSession } from "./controllers/agents.ts";
 import { ChatState, loadChatHistory } from "./controllers/chat.ts";
 import { loadSessions } from "./controllers/sessions.ts";
 import { icons } from "./icons.ts";
 import { iconForTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
-import type { ThemeTransitionContext } from "./theme-transition.ts";
-import type { ThemeMode, ThemeName } from "./theme.ts";
-import type { ModelCatalogEntry, SessionsListResult } from "./types.ts";
+import { parseAgentSessionKey } from "./session-key.ts";
+import { normalizeLowercaseStringOrEmpty, normalizeOptionalString } from "./string-coerce.ts";
+import type { ThemeMode } from "./theme.ts";
+import {
+  listThinkingLevelLabels,
+  normalizeThinkLevel,
+  resolveThinkingDefaultForModel,
+} from "./thinking.ts";
+import type { SessionsListResult } from "./types.ts";
 
 type SessionDefaultsSnapshot = {
   mainSessionKey?: string;
@@ -23,11 +34,11 @@ function resolveSidebarChatSessionKey(state: AppViewState): string {
   const snapshot = state.hello?.snapshot as
     | { sessionDefaults?: SessionDefaultsSnapshot }
     | undefined;
-  const mainSessionKey = snapshot?.sessionDefaults?.mainSessionKey?.trim();
+  const mainSessionKey = normalizeOptionalString(snapshot?.sessionDefaults?.mainSessionKey);
   if (mainSessionKey) {
     return mainSessionKey;
   }
-  const mainKey = snapshot?.sessionDefaults?.mainKey?.trim();
+  const mainKey = normalizeOptionalString(snapshot?.sessionDefaults?.mainKey);
   if (mainKey) {
     return mainKey;
   }
@@ -103,25 +114,23 @@ function renderCronFilterIcon(hiddenCount: number) {
         <circle cx="12" cy="12" r="10"></circle>
         <polyline points="12 6 12 12 16 14"></polyline>
       </svg>
-      ${
-        hiddenCount > 0
-          ? html`<span
+      ${hiddenCount > 0
+        ? html`<span
             style="
               position: absolute;
               top: -5px;
               right: -6px;
               background: var(--color-accent, #6366f1);
               color: #fff;
-              border-radius: 999px;
+              border-radius: var(--radius-full);
               font-size: 9px;
               line-height: 1;
               padding: 1px 3px;
               pointer-events: none;
             "
-          >${hiddenCount}</span
+            >${hiddenCount}</span
           >`
-          : ""
-      }
+        : ""}
     </span>
   `;
 }
@@ -131,6 +140,10 @@ export function renderChatSessionSelect(state: AppViewState) {
   const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
   const sessionPickerTitle = activeRow?.label?.trim() || state.sessionKey;
   const modelSelect = renderChatModelSelect(state);
+  const thinkingSelect = renderChatThinkingSelect(state);
+  const selectedSessionLabel =
+    sessionGroups.flatMap((group) => group.options).find((entry) => entry.key === state.sessionKey)
+      ?.label ?? state.sessionKey;
   return html`
     <div class="chat-controls__session-row">
       <label
@@ -141,6 +154,7 @@ export function renderChatSessionSelect(state: AppViewState) {
         <select
           class="chat-controls__native-select"
           .value=${state.sessionKey}
+          title=${selectedSessionLabel}
           ?disabled=${!state.connected || sessionGroups.length === 0}
           @change=${(e: Event) => {
             const next = (e.target as HTMLSelectElement).value;
@@ -159,9 +173,7 @@ export function renderChatSessionSelect(state: AppViewState) {
                   group.options,
                   (entry) => entry.key,
                   (entry) =>
-                    html`<option value=${entry.key} title=${entry.title}>
-                      ${entry.label}
-                    </option>`,
+                    html`<option value=${entry.key} title=${entry.title}>${entry.label}</option>`,
                 )}
               </optgroup>`,
           )}
@@ -170,7 +182,7 @@ export function renderChatSessionSelect(state: AppViewState) {
           <span class="chat-controls__control-icon">${icons.messageSquare}</span>
         </span>
       </label>
-      ${modelSelect}
+      ${modelSelect} ${thinkingSelect}
     </div>
   `;
 }
@@ -183,7 +195,24 @@ export function renderChatControls(state: AppViewState) {
   const disableThinkingToggle = state.onboarding;
   const disableFocusToggle = state.onboarding;
   const showThinking = state.onboarding ? false : state.settings.chatShowThinking;
+  const showToolCalls = state.onboarding ? true : state.settings.chatShowToolCalls;
   const focusActive = state.onboarding ? true : state.settings.chatFocusMode;
+  const toolCallsIcon = html`
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path
+        d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+      ></path>
+    </svg>
+  `;
   const refreshIcon = html`
     <svg
       width="18"
@@ -263,6 +292,23 @@ export function renderChatControls(state: AppViewState) {
         ${icons.brain}
       </button>
       <button
+        class="btn btn--sm btn--icon ${showToolCalls ? "active" : ""}"
+        ?disabled=${disableThinkingToggle}
+        @click=${() => {
+          if (disableThinkingToggle) {
+            return;
+          }
+          state.applySettings({
+            ...state.settings,
+            chatShowToolCalls: !state.settings.chatShowToolCalls,
+          });
+        }}
+        aria-pressed=${showToolCalls}
+        title=${disableThinkingToggle ? t("chat.onboardingDisabled") : t("chat.toolCallsToggle")}
+      >
+        ${toolCallsIcon}
+      </button>
+      <button
         class="btn btn--sm btn--icon ${focusActive ? "active" : ""}"
         ?disabled=${disableFocusToggle}
         @click=${() => {
@@ -285,13 +331,11 @@ export function renderChatControls(state: AppViewState) {
           state.sessionsHideCron = !hideCron;
         }}
         aria-pressed=${hideCron}
-        title=${
-          hideCron
-            ? hiddenCronCount > 0
-              ? t("chat.showCronSessionsHidden", { count: String(hiddenCronCount) })
-              : t("chat.showCronSessions")
-            : t("chat.hideCronSessions")
-        }
+        title=${hideCron
+          ? hiddenCronCount > 0
+            ? t("chat.showCronSessionsHidden", { count: String(hiddenCronCount) })
+            : t("chat.showCronSessions")
+          : t("chat.hideCronSessions")}
       >
         ${renderCronFilterIcon(hiddenCronCount)}
       </button>
@@ -299,7 +343,177 @@ export function renderChatControls(state: AppViewState) {
   `;
 }
 
-function switchChatSession(state: AppViewState, nextSessionKey: string) {
+/**
+ * Mobile-only gear toggle + dropdown for chat controls.
+ * Rendered in the topbar so it doesn't consume content-header space.
+ * Hidden on desktop via CSS.
+ */
+export function renderChatMobileToggle(state: AppViewState) {
+  const sessionGroups = resolveSessionOptionGroups(state, state.sessionKey, state.sessionsResult);
+  const disableThinkingToggle = state.onboarding;
+  const disableFocusToggle = state.onboarding;
+  const showThinking = state.onboarding ? false : state.settings.chatShowThinking;
+  const showToolCalls = state.onboarding ? true : state.settings.chatShowToolCalls;
+  const focusActive = state.onboarding ? true : state.settings.chatFocusMode;
+  const toolCallsIcon = html`
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path
+        d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+      ></path>
+    </svg>
+  `;
+  const focusIcon = html`
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M4 7V4h3"></path>
+      <path d="M20 7V4h-3"></path>
+      <path d="M4 17v3h3"></path>
+      <path d="M20 17v3h-3"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  `;
+
+  return html`
+    <div class="chat-mobile-controls-wrapper">
+      <button
+        class="btn btn--sm btn--icon chat-controls-mobile-toggle"
+        @click=${(e: Event) => {
+          e.stopPropagation();
+          const btn = e.currentTarget as HTMLElement;
+          const dropdown = btn.nextElementSibling as HTMLElement;
+          if (dropdown) {
+            const isOpen = dropdown.classList.toggle("open");
+            if (isOpen) {
+              const close = () => {
+                dropdown.classList.remove("open");
+                document.removeEventListener("click", close);
+              };
+              setTimeout(() => document.addEventListener("click", close, { once: true }), 0);
+            }
+          }
+        }}
+        title="Chat settings"
+        aria-label="Chat settings"
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="3"></circle>
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+          ></path>
+        </svg>
+      </button>
+      <div
+        class="chat-controls-dropdown"
+        @click=${(e: Event) => {
+          e.stopPropagation();
+        }}
+      >
+        <div class="chat-controls">
+          <label class="field chat-controls__session">
+            <select
+              .value=${state.sessionKey}
+              @change=${(e: Event) => {
+                const next = (e.target as HTMLSelectElement).value;
+                switchChatSession(state, next);
+              }}
+            >
+              ${sessionGroups.map(
+                (group) => html`
+                  <optgroup label=${group.label}>
+                    ${group.options.map(
+                      (opt) => html`
+                        <option value=${opt.key} title=${opt.title}>${opt.label}</option>
+                      `,
+                    )}
+                  </optgroup>
+                `,
+              )}
+            </select>
+          </label>
+          ${renderChatThinkingSelect(state)}
+          <div class="chat-controls__thinking">
+            <button
+              class="btn btn--sm btn--icon ${showThinking ? "active" : ""}"
+              ?disabled=${disableThinkingToggle}
+              @click=${() => {
+                if (!disableThinkingToggle) {
+                  state.applySettings({
+                    ...state.settings,
+                    chatShowThinking: !state.settings.chatShowThinking,
+                  });
+                }
+              }}
+              aria-pressed=${showThinking}
+              title=${t("chat.thinkingToggle")}
+            >
+              ${icons.brain}
+            </button>
+            <button
+              class="btn btn--sm btn--icon ${showToolCalls ? "active" : ""}"
+              ?disabled=${disableThinkingToggle}
+              @click=${() => {
+                if (!disableThinkingToggle) {
+                  state.applySettings({
+                    ...state.settings,
+                    chatShowToolCalls: !state.settings.chatShowToolCalls,
+                  });
+                }
+              }}
+              aria-pressed=${showToolCalls}
+              title=${t("chat.toolCallsToggle")}
+            >
+              ${toolCallsIcon}
+            </button>
+            <button
+              class="btn btn--sm btn--icon ${focusActive ? "active" : ""}"
+              ?disabled=${disableFocusToggle}
+              @click=${() => {
+                if (!disableFocusToggle) {
+                  state.applySettings({
+                    ...state.settings,
+                    chatFocusMode: !state.settings.chatFocusMode,
+                  });
+                }
+              }}
+              aria-pressed=${focusActive}
+              title=${t("chat.focusToggle")}
+            >
+              ${focusIcon}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export function switchChatSession(state: AppViewState, nextSessionKey: string) {
   state.sessionKey = nextSessionKey;
   state.chatMessage = "";
   state.chatStream = null;
@@ -333,112 +547,17 @@ async function refreshSessionOptions(state: AppViewState) {
   });
 }
 
-function resolveActiveSessionRow(state: AppViewState) {
-  return state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
-}
-
-function buildModelRef(model?: string | null, provider?: string | null): string {
-  const trimmedModel = typeof model === "string" ? model.trim() : "";
-  if (!trimmedModel) {
-    return "";
-  }
-  if (trimmedModel.includes("/")) {
-    return trimmedModel;
-  }
-  const trimmedProvider = typeof provider === "string" ? provider.trim() : "";
-  return trimmedProvider ? `${trimmedProvider}/${trimmedModel}` : trimmedModel;
-}
-
-function resolveModelOverrideValue(state: AppViewState): string {
-  // Prefer the local cache — it reflects in-flight patches before sessionsResult refreshes.
-  const cached = state.chatModelOverrides[state.sessionKey];
-  if (typeof cached === "string") {
-    return buildModelRef(cached, resolveActiveSessionRow(state)?.modelProvider);
-  }
-  // cached === null means explicitly cleared to default.
-  if (cached === null) {
-    return "";
-  }
-  // No local override recorded yet — fall back to server data.
-  const activeRow = resolveActiveSessionRow(state);
-  if (activeRow) {
-    return buildModelRef(activeRow.model, activeRow.modelProvider);
-  }
-  return "";
-}
-
-function resolveDefaultModelValue(state: AppViewState): string {
-  const model = state.sessionsResult?.defaults?.model;
-  return typeof model === "string" ? model.trim() : "";
-}
-
-function buildChatModelOptions(
-  catalog: ModelCatalogEntry[],
-  currentOverride: string,
-  defaultModel: string,
-): Array<{ value: string; label: string }> {
-  const seen = new Set<string>();
-  const options: Array<{ value: string; label: string }> = [];
-  const addOption = (value: string, label?: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return;
-    }
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    options.push({ value: trimmed, label: label ?? trimmed });
-  };
-
-  for (const entry of catalog) {
-    const provider = entry.provider?.trim();
-    addOption(buildModelRef(entry.id, provider), provider ? `${entry.id} · ${provider}` : entry.id);
-  }
-
-  if (currentOverride) {
-    addOption(currentOverride);
-  }
-  if (defaultModel) {
-    addOption(defaultModel);
-  }
-  return options;
-}
-
-function normalizeSelectedModelRef(
-  rawValue: string,
-  catalog: ModelCatalogEntry[],
-  fallbackProvider?: string | null,
-): string {
-  const trimmed = rawValue.trim();
-  if (!trimmed) {
-    return "";
-  }
-  if (trimmed.includes("/")) {
-    return trimmed;
-  }
-  const matches = catalog.filter((entry) => entry.id?.trim() === trimmed);
-  if (matches.length === 1) {
-    return buildModelRef(trimmed, matches[0]?.provider);
-  }
-  return buildModelRef(trimmed, fallbackProvider);
-}
-
 function renderChatModelSelect(state: AppViewState) {
-  const currentOverride = resolveModelOverrideValue(state);
-  const defaultModel = resolveDefaultModelValue(state);
-  const options = buildChatModelOptions(
-    state.chatModelCatalog ?? [],
-    currentOverride,
-    defaultModel,
-  );
-  const defaultLabel = defaultModel ? `Default (${defaultModel})` : "Default model";
-  const modelPickerTitle = currentOverride || defaultLabel;
+  const { currentOverride, defaultLabel, options } = resolveChatModelSelectState(state);
   const busy =
     state.chatLoading || state.chatSending || Boolean(state.chatRunId) || state.chatStream !== null;
   const disabled =
     !state.connected || busy || (state.chatModelsLoading && options.length === 0) || !state.client;
+  const selectedLabel =
+    currentOverride === ""
+      ? defaultLabel
+      : (options.find((entry) => entry.value === currentOverride)?.label ?? currentOverride);
+  const modelPickerTitle = selectedLabel;
   return html`
     <label
       class="btn btn--sm btn--icon chat-controls__icon-control chat-controls__picker-select"
@@ -449,6 +568,7 @@ function renderChatModelSelect(state: AppViewState) {
         data-chat-model-select="true"
         class="chat-controls__native-select"
         aria-label="Chat model"
+        title=${selectedLabel}
         ?disabled=${disabled}
         @change=${async (e: Event) => {
           const next = (e.target as HTMLSelectElement).value.trim();
@@ -472,17 +592,131 @@ function renderChatModelSelect(state: AppViewState) {
   `;
 }
 
+type ChatThinkingSelectOption = {
+  value: string;
+  label: string;
+};
+
+type ChatThinkingSelectState = {
+  currentOverride: string;
+  defaultLabel: string;
+  options: ChatThinkingSelectOption[];
+};
+
+function resolveThinkingTargetModel(state: AppViewState): {
+  provider: string | null;
+  model: string | null;
+} {
+  const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
+  return {
+    provider: activeRow?.modelProvider ?? state.sessionsResult?.defaults?.modelProvider ?? null,
+    model: activeRow?.model ?? state.sessionsResult?.defaults?.model ?? null,
+  };
+}
+
+function buildThinkingOptions(
+  provider: string | null,
+  model: string | null,
+  currentOverride: string,
+): ChatThinkingSelectOption[] {
+  const seen = new Set<string>();
+  const options: ChatThinkingSelectOption[] = [];
+
+  const addOption = (value: string, label?: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    const key = normalizeLowercaseStringOrEmpty(trimmed);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    options.push({
+      value: trimmed,
+      label:
+        label ??
+        trimmed
+          .split(/[-_]/g)
+          .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+          .join(" "),
+    });
+  };
+
+  for (const label of listThinkingLevelLabels(provider)) {
+    const normalized = normalizeThinkLevel(label) ?? normalizeLowercaseStringOrEmpty(label);
+    addOption(normalized);
+  }
+  if (currentOverride) {
+    addOption(currentOverride);
+  }
+  return options;
+}
+
+function resolveChatThinkingSelectState(state: AppViewState): ChatThinkingSelectState {
+  const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === state.sessionKey);
+  const persisted = activeRow?.thinkingLevel;
+  const currentOverride =
+    typeof persisted === "string" && persisted.trim()
+      ? (normalizeThinkLevel(persisted) ?? persisted.trim())
+      : "";
+  const { provider, model } = resolveThinkingTargetModel(state);
+  const defaultLevel =
+    provider && model
+      ? resolveThinkingDefaultForModel({
+          provider,
+          model,
+          catalog: state.chatModelCatalog ?? [],
+        })
+      : "off";
+  return {
+    currentOverride,
+    defaultLabel: `Default (${defaultLevel})`,
+    options: buildThinkingOptions(provider, model, currentOverride),
+  };
+}
+
+function renderChatThinkingSelect(state: AppViewState) {
+  const { currentOverride, defaultLabel, options } = resolveChatThinkingSelectState(state);
+  const busy =
+    state.chatLoading || state.chatSending || Boolean(state.chatRunId) || state.chatStream !== null;
+  const disabled = !state.connected || busy || !state.client;
+  const selectedLabel =
+    currentOverride === ""
+      ? defaultLabel
+      : (options.find((entry) => entry.value === currentOverride)?.label ?? currentOverride);
+  return html`
+    <label class="field chat-controls__session chat-controls__thinking-select">
+      <select
+        data-chat-thinking-select="true"
+        aria-label="Chat thinking level"
+        title=${selectedLabel}
+        ?disabled=${disabled}
+        @change=${async (e: Event) => {
+          const next = (e.target as HTMLSelectElement).value.trim();
+          await switchChatThinkingLevel(state, next);
+        }}
+      >
+        <option value="" ?selected=${currentOverride === ""}>${defaultLabel}</option>
+        ${repeat(
+          options,
+          (entry) => entry.value,
+          (entry) =>
+            html`<option value=${entry.value} ?selected=${entry.value === currentOverride}>
+              ${entry.label}
+            </option>`,
+        )}
+      </select>
+    </label>
+  `;
+}
+
 async function switchChatModel(state: AppViewState, nextModel: string) {
   if (!state.client || !state.connected) {
     return;
   }
-  const normalizedNextModel = normalizeSelectedModelRef(
-    nextModel,
-    state.chatModelCatalog ?? [],
-    resolveActiveSessionRow(state)?.modelProvider,
-  );
-  const currentOverride = resolveModelOverrideValue(state);
-  if (currentOverride === normalizedNextModel) {
+  const currentOverride = resolveChatModelOverrideValue(state);
+  if (currentOverride === nextModel) {
     return;
   }
   const targetSessionKey = state.sessionKey;
@@ -491,18 +725,73 @@ async function switchChatModel(state: AppViewState, nextModel: string) {
   // Write the override cache immediately so the picker stays in sync during the RPC round-trip.
   state.chatModelOverrides = {
     ...state.chatModelOverrides,
-    [targetSessionKey]: normalizedNextModel || null,
+    [targetSessionKey]: createChatModelOverride(nextModel),
   };
   try {
     await state.client.request("sessions.patch", {
       key: targetSessionKey,
-      model: normalizedNextModel || null,
+      model: nextModel || null,
     });
+    void refreshVisibleToolsEffectiveForCurrentSession(state);
     await refreshSessionOptions(state);
   } catch (err) {
     // Roll back so the picker reflects the actual server model.
     state.chatModelOverrides = { ...state.chatModelOverrides, [targetSessionKey]: prevOverride };
     state.lastError = `Failed to set model: ${String(err)}`;
+  }
+}
+
+function patchSessionThinkingLevel(
+  state: AppViewState,
+  sessionKey: string,
+  thinkingLevel: string | undefined,
+) {
+  const current = state.sessionsResult;
+  if (!current) {
+    return;
+  }
+  state.sessionsResult = {
+    ...current,
+    sessions: current.sessions.map((row) =>
+      row.key === sessionKey
+        ? {
+            ...row,
+            thinkingLevel,
+          }
+        : row,
+    ),
+  };
+}
+
+async function switchChatThinkingLevel(state: AppViewState, nextThinkingLevel: string) {
+  if (!state.client || !state.connected) {
+    return;
+  }
+  const targetSessionKey = state.sessionKey;
+  const activeRow = state.sessionsResult?.sessions?.find((row) => row.key === targetSessionKey);
+  const previousThinkingLevel = activeRow?.thinkingLevel;
+  const normalizedNext =
+    (normalizeThinkLevel(nextThinkingLevel) ?? nextThinkingLevel.trim()) || undefined;
+  const normalizedPrev =
+    typeof previousThinkingLevel === "string" && previousThinkingLevel.trim()
+      ? (normalizeThinkLevel(previousThinkingLevel) ?? previousThinkingLevel.trim())
+      : undefined;
+  if ((normalizedPrev ?? "") === (normalizedNext ?? "")) {
+    return;
+  }
+  state.lastError = null;
+  patchSessionThinkingLevel(state, targetSessionKey, normalizedNext);
+  state.chatThinkingLevel = normalizedNext ?? null;
+  try {
+    await state.client.request("sessions.patch", {
+      key: targetSessionKey,
+      thinkingLevel: normalizedNext ?? null,
+    });
+    await refreshSessionOptions(state);
+  } catch (err) {
+    patchSessionThinkingLevel(state, targetSessionKey, previousThinkingLevel);
+    state.chatThinkingLevel = normalizedPrev ?? null;
+    state.lastError = `Failed to set thinking level: ${String(err)}`;
   }
 }
 
@@ -538,7 +827,7 @@ function capitalize(s: string): string {
  * fallback display name.  Exported for testing.
  */
 export function parseSessionKey(key: string): SessionKeyInfo {
-  const normalized = key.toLowerCase();
+  const normalized = normalizeLowercaseStringOrEmpty(key);
 
   // ── Main session ─────────────────────────────────
   if (key === "main" || key === "agent:main:main") {
@@ -587,8 +876,8 @@ export function resolveSessionDisplayName(
   key: string,
   row?: SessionsListResult["sessions"][number],
 ): string {
-  const label = row?.label?.trim() || "";
-  const displayName = row?.displayName?.trim() || "";
+  const label = normalizeOptionalString(row?.label) ?? "";
+  const displayName = normalizeOptionalString(row?.displayName) ?? "";
   const { prefix, fallbackName } = parseSessionKey(key);
 
   const applyTypedPrefix = (name: string): string => {
@@ -609,7 +898,7 @@ export function resolveSessionDisplayName(
 }
 
 export function isCronSessionKey(key: string): boolean {
-  const normalized = key.trim().toLowerCase();
+  const normalized = normalizeLowercaseStringOrEmpty(key);
   if (!normalized) {
     return false;
   }
@@ -630,6 +919,7 @@ export function isCronSessionKey(key: string): boolean {
 type SessionOptionEntry = {
   key: string;
   label: string;
+  scopeLabel: string;
   title: string;
 };
 
@@ -676,14 +966,16 @@ export function resolveSessionOptionGroups(
     const parsed = parseAgentSessionKey(key);
     const group = parsed
       ? ensureGroup(
-          `agent:${parsed.agentId.toLowerCase()}`,
+          `agent:${normalizeLowercaseStringOrEmpty(parsed.agentId)}`,
           resolveAgentGroupLabel(state, parsed.agentId),
         )
       : ensureGroup("other", "Other Sessions");
+    const scopeLabel = normalizeOptionalString(parsed?.rest) ?? key;
     const label = resolveSessionScopedOptionLabel(key, row, parsed?.rest);
     group.options.push({
       key,
       label,
+      scopeLabel,
       title: key,
     });
   };
@@ -698,6 +990,83 @@ export function resolveSessionOptionGroups(
     addOption(row.key);
   }
   addOption(sessionKey);
+
+  for (const group of groups.values()) {
+    const counts = new Map<string, number>();
+    for (const option of group.options) {
+      counts.set(option.label, (counts.get(option.label) ?? 0) + 1);
+    }
+    for (const option of group.options) {
+      if ((counts.get(option.label) ?? 0) > 1 && option.scopeLabel !== option.label) {
+        option.label = `${option.label} · ${option.scopeLabel}`;
+      }
+    }
+  }
+
+  const allOptions = Array.from(groups.values()).flatMap((group) =>
+    group.options.map((option) => ({ groupLabel: group.label, option })),
+  );
+  const labels = new Map(allOptions.map(({ option }) => [option, option.label]));
+  const countAssignedLabels = () => {
+    const counts = new Map<string, number>();
+    for (const { option } of allOptions) {
+      const label = labels.get(option) ?? option.label;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const labelIncludesScopeLabel = (label: string, scopeLabel: string) => {
+    const trimmedScope = scopeLabel.trim();
+    if (!trimmedScope) {
+      return false;
+    }
+    return (
+      label === trimmedScope ||
+      label.endsWith(` · ${trimmedScope}`) ||
+      label.endsWith(` / ${trimmedScope}`)
+    );
+  };
+
+  const globalCounts = countAssignedLabels();
+  for (const { groupLabel, option } of allOptions) {
+    const currentLabel = labels.get(option) ?? option.label;
+    if ((globalCounts.get(currentLabel) ?? 0) <= 1) {
+      continue;
+    }
+    const scopedPrefix = `${groupLabel} / `;
+    if (currentLabel.startsWith(scopedPrefix)) {
+      continue;
+    }
+    // Keep the agent visible once the native select collapses to a single chosen label.
+    labels.set(option, `${groupLabel} / ${currentLabel}`);
+  }
+
+  const scopedCounts = countAssignedLabels();
+  for (const { option } of allOptions) {
+    const currentLabel = labels.get(option) ?? option.label;
+    if ((scopedCounts.get(currentLabel) ?? 0) <= 1) {
+      continue;
+    }
+    if (labelIncludesScopeLabel(currentLabel, option.scopeLabel)) {
+      continue;
+    }
+    labels.set(option, `${currentLabel} · ${option.scopeLabel}`);
+  }
+
+  const finalCounts = countAssignedLabels();
+  for (const { option } of allOptions) {
+    const currentLabel = labels.get(option) ?? option.label;
+    if ((finalCounts.get(currentLabel) ?? 0) <= 1) {
+      continue;
+    }
+    // Fall back to the full key only when every friendlier disambiguator still collides.
+    labels.set(option, `${currentLabel} · ${option.key}`);
+  }
+
+  for (const { option } of allOptions) {
+    option.label = labels.get(option) ?? option.label;
+  }
+
   return Array.from(groups.values());
 }
 
@@ -711,11 +1080,12 @@ function countHiddenCronSessions(sessionKey: string, sessions: SessionsListResul
 }
 
 function resolveAgentGroupLabel(state: AppViewState, agentIdRaw: string): string {
-  const normalized = agentIdRaw.trim().toLowerCase();
+  const normalized = normalizeLowercaseStringOrEmpty(agentIdRaw);
   const agent = (state.agentsList?.agents ?? []).find(
-    (entry) => entry.id.trim().toLowerCase() === normalized,
+    (entry) => normalizeLowercaseStringOrEmpty(entry.id) === normalized,
   );
-  const name = agent?.identity?.name?.trim() || agent?.name?.trim() || "";
+  const name =
+    normalizeOptionalString(agent?.identity?.name) ?? normalizeOptionalString(agent?.name) ?? "";
   return name && name !== agentIdRaw ? `${name} (${agentIdRaw})` : agentIdRaw;
 }
 
@@ -724,30 +1094,19 @@ function resolveSessionScopedOptionLabel(
   row?: SessionsListResult["sessions"][number],
   rest?: string,
 ) {
-  const base = rest?.trim() || key;
+  const base = normalizeOptionalString(rest) ?? key;
   if (!row) {
     return base;
   }
-  const displayName =
-    typeof row.displayName === "string" && row.displayName.trim().length > 0
-      ? row.displayName.trim()
-      : null;
-  const label = typeof row.label === "string" ? row.label.trim() : "";
-  const showDisplayName = Boolean(
-    displayName && displayName !== key && displayName !== label && displayName !== base,
-  );
-  if (!showDisplayName) {
-    return base;
-  }
-  return `${base} · ${displayName}`;
-}
 
-type ThemeOption = { id: ThemeName; label: string; icon: string };
-const THEME_OPTIONS: ThemeOption[] = [
-  { id: "claw", label: "Claw", icon: "🦀" },
-  { id: "knot", label: "Knot", icon: "🪢" },
-  { id: "dash", label: "Dash", icon: "📊" },
-];
+  const label = normalizeOptionalString(row.label) ?? "";
+  const displayName = normalizeOptionalString(row.displayName) ?? "";
+  if ((label && label !== key) || (displayName && displayName !== key)) {
+    return resolveSessionDisplayName(key, row);
+  }
+
+  return base;
+}
 
 type ThemeModeOption = { id: ThemeMode; label: string; short: string };
 const THEME_MODE_OPTIONS: ThemeModeOption[] = [
@@ -755,10 +1114,6 @@ const THEME_MODE_OPTIONS: ThemeModeOption[] = [
   { id: "light", label: "Light", short: "LIGHT" },
   { id: "dark", label: "Dark", short: "DARK" },
 ];
-
-function currentThemeIcon(theme: ThemeName): string {
-  return THEME_OPTIONS.find((o) => o.id === theme)?.icon ?? "🎨";
-}
 
 export function renderTopbarThemeModeToggle(state: AppViewState) {
   const modeIcon = (mode: ThemeMode) => {
@@ -784,7 +1139,9 @@ export function renderTopbarThemeModeToggle(state: AppViewState) {
         (opt) => html`
           <button
             type="button"
-            class="topbar-theme-mode__btn ${opt.id === state.themeMode ? "topbar-theme-mode__btn--active" : ""}"
+            class="topbar-theme-mode__btn ${opt.id === state.themeMode
+              ? "topbar-theme-mode__btn--active"
+              : ""}"
             title=${opt.label}
             aria-label="Color mode: ${opt.label}"
             aria-pressed=${opt.id === state.themeMode}
@@ -812,77 +1169,5 @@ export function renderSidebarConnectionStatus(state: AppViewState) {
       aria-label="Gateway status: ${label}"
       title="Gateway status: ${label}"
     ></span>
-  `;
-}
-
-export function renderThemeToggle(state: AppViewState) {
-  const setOpen = (orb: HTMLElement, nextOpen: boolean) => {
-    orb.classList.toggle("theme-orb--open", nextOpen);
-    const trigger = orb.querySelector<HTMLButtonElement>(".theme-orb__trigger");
-    const menu = orb.querySelector<HTMLElement>(".theme-orb__menu");
-    if (trigger) {
-      trigger.setAttribute("aria-expanded", nextOpen ? "true" : "false");
-    }
-    if (menu) {
-      menu.setAttribute("aria-hidden", nextOpen ? "false" : "true");
-    }
-  };
-
-  const toggleOpen = (e: Event) => {
-    const orb = (e.currentTarget as HTMLElement).closest<HTMLElement>(".theme-orb");
-    if (!orb) {
-      return;
-    }
-    const isOpen = orb.classList.contains("theme-orb--open");
-    if (isOpen) {
-      setOpen(orb, false);
-    } else {
-      setOpen(orb, true);
-      const close = (ev: MouseEvent) => {
-        if (!orb.contains(ev.target as Node)) {
-          setOpen(orb, false);
-          document.removeEventListener("click", close);
-        }
-      };
-      requestAnimationFrame(() => document.addEventListener("click", close));
-    }
-  };
-
-  const pick = (opt: ThemeOption, e: Event) => {
-    const orb = (e.currentTarget as HTMLElement).closest<HTMLElement>(".theme-orb");
-    if (orb) {
-      setOpen(orb, false);
-    }
-    if (opt.id !== state.theme) {
-      const context: ThemeTransitionContext = { element: orb ?? undefined };
-      state.setTheme(opt.id, context);
-    }
-  };
-
-  return html`
-    <div class="theme-orb" aria-label="Theme">
-      <button
-        type="button"
-        class="theme-orb__trigger"
-        title="Theme"
-        aria-haspopup="menu"
-        aria-expanded="false"
-        @click=${toggleOpen}
-      >${currentThemeIcon(state.theme)}</button>
-      <div class="theme-orb__menu" role="menu" aria-hidden="true">
-        ${THEME_OPTIONS.map(
-          (opt) => html`
-            <button
-              type="button"
-              class="theme-orb__option ${opt.id === state.theme ? "theme-orb__option--active" : ""}"
-              title=${opt.label}
-              role="menuitemradio"
-              aria-checked=${opt.id === state.theme}
-              aria-label=${opt.label}
-              @click=${(e: Event) => pick(opt, e)}
-            >${opt.icon}</button>`,
-        )}
-      </div>
-    </div>
   `;
 }
